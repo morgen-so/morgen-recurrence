@@ -1,5 +1,10 @@
 import { ParsedOptions, Frequency } from './types'
-import { pymod, divmod, empty, includes } from './helpers'
+import { pymod, divmod, empty, includes, notEmpty } from './helpers'
+
+function gcd(a: number, b: number): number {
+  while (b) [a, b] = [b, a % b]
+  return a
+}
 import { MAXYEAR, monthRange } from './dateutil'
 
 export class Time {
@@ -147,27 +152,53 @@ export class DateTime extends Time {
     this.fixDay()
   }
 
+  // Sub-daily counters follow python-dateutil's rrule._iter. rrule.js 2.8.0
+  // carried overflowing seconds/minutes by repeatedly adding the carry
+  // (e.g. +780 minutes) until BYMINUTE/BYHOUR matched, which misaligned the
+  // INTERVAL grid, skipped days, or looped forever
+  // (FREQ=SECONDLY;INTERVAL=3;BYMINUTE=30 from hh:00:30). Unreachable
+  // combinations set `exhausted` instead of looping or throwing.
+
+  /**
+   * Steps `value` by `interval` (mod `base`) until it lands in `byxxx`;
+   * returns the number of base overflows, or -1 if it never does.
+   */
+  private modDistance(value: number, interval: number, byxxx: number[], base: number) {
+    let acc = 0
+    for (let i = 1; i <= base; i++) {
+      value += interval
+      const div = Math.floor(value / base)
+      value -= div * base
+      acc += div
+      if (byxxx.indexOf(value) !== -1) {
+        this.modValue = value
+        return acc
+      }
+    }
+    return -1
+  }
+
+  private modValue = 0
+
   public addHours(hours: number, filtered: boolean, byhour: number[]) {
     if (filtered) {
       // Jump to one iteration before next day
       this.hour += Math.floor((23 - this.hour) / hours) * hours
     }
-
-    // The hour sequence repeats after at most 24 steps.
-    for (let steps = 0; ; steps++) {
-      if (steps > 24) {
+    let ndays: number
+    if (notEmpty(byhour)) {
+      ndays = this.modDistance(this.hour, hours, byhour, 24)
+      if (ndays < 0) {
         this.exhausted = true
         return
       }
-      this.hour += hours
-      const { div: dayDiv, mod: hourMod } = divmod(this.hour, 24)
-      if (dayDiv) {
-        this.hour = hourMod
-        this.addDaily(dayDiv)
-      }
-
-      if (empty(byhour) || includes(byhour, this.hour)) break
+      this.hour = this.modValue
+    } else {
+      const { div, mod } = divmod(this.hour + hours, 24)
+      ndays = div
+      this.hour = mod
     }
+    if (ndays) this.addDaily(ndays)
   }
 
   public addMinutes(
@@ -181,28 +212,27 @@ export class DateTime extends Time {
       this.minute +=
         Math.floor((1439 - (this.hour * 60 + this.minute)) / minutes) * minutes
     }
-
-    // (hour, minute) has 1440 states.
-    for (let steps = 0; ; steps++) {
-      if (steps > 1440) {
-        this.exhausted = true
-        return
+    const reps = 1440 / gcd(minutes, 1440)
+    for (let j = 0; j < reps; j++) {
+      let nhours: number
+      if (notEmpty(byminute)) {
+        nhours = this.modDistance(this.minute, minutes, byminute, 60)
+        if (nhours < 0) break
+        this.minute = this.modValue
+      } else {
+        const { div, mod } = divmod(this.minute + minutes, 60)
+        nhours = div
+        this.minute = mod
       }
-      this.minute += minutes
-      const { div: hourDiv, mod: minuteMod } = divmod(this.minute, 60)
-      if (hourDiv) {
-        this.minute = minuteMod
-        this.addHours(hourDiv, false, byhour)
-        if (this.exhausted) return
-      }
-
-      if (
-        (empty(byhour) || includes(byhour, this.hour)) &&
-        (empty(byminute) || includes(byminute, this.minute))
-      ) {
-        break
-      }
+      const { div: ndays, mod: hour } = divmod(this.hour + nhours, 24)
+      this.hour = hour
+      if (ndays) this.addDaily(ndays)
+      if (empty(byhour) || includes(byhour, this.hour)) return
+      // Skip to the last step within this (non-matching) hour: same result
+      // as stepping through it, much cheaper for sparse BYHOUR.
+      this.minute += Math.floor((59 - this.minute) / minutes) * minutes
     }
+    this.exhausted = true
   }
 
   public addSeconds(
@@ -220,29 +250,41 @@ export class DateTime extends Time {
             seconds
         ) * seconds
     }
-
-    // (hour, minute, second) has 86400 states.
-    for (let steps = 0; ; steps++) {
-      if (steps > 86400) {
-        this.exhausted = true
-        return
+    const reps = 86400 / gcd(seconds, 86400)
+    for (let j = 0; j < reps; j++) {
+      let nminutes: number
+      if (notEmpty(bysecond)) {
+        nminutes = this.modDistance(this.second, seconds, bysecond, 60)
+        if (nminutes < 0) break
+        this.second = this.modValue
+      } else {
+        const { div, mod } = divmod(this.second + seconds, 60)
+        nminutes = div
+        this.second = mod
       }
-      this.second += seconds
-      const { div: minuteDiv, mod: secondMod } = divmod(this.second, 60)
-      if (minuteDiv) {
-        this.second = secondMod
-        this.addMinutes(minuteDiv, false, byhour, byminute)
-        if (this.exhausted) return
+      const { div: nhours, mod: minute } = divmod(this.minute + nminutes, 60)
+      this.minute = minute
+      if (nhours) {
+        const { div: ndays, mod: hour } = divmod(this.hour + nhours, 24)
+        this.hour = hour
+        if (ndays) this.addDaily(ndays)
       }
-
-      if (
-        (empty(byhour) || includes(byhour, this.hour)) &&
-        (empty(byminute) || includes(byminute, this.minute)) &&
-        (empty(bysecond) || includes(bysecond, this.second))
-      ) {
-        break
+      if (notEmpty(byhour) && !includes(byhour, this.hour)) {
+        // Skip to the last step within this (non-matching) hour: same result
+        // as stepping through it, much cheaper for sparse BYHOUR/BYMINUTE.
+        const k = Math.floor((3599 - (this.minute * 60 + this.second)) / seconds)
+        const { div, mod } = divmod(this.second + k * seconds, 60)
+        this.minute += div
+        this.second = mod
+        continue
       }
+      if (notEmpty(byminute) && !includes(byminute, this.minute)) {
+        this.second += Math.floor((59 - this.second) / seconds) * seconds
+        continue
+      }
+      if (empty(bysecond) || includes(bysecond, this.second)) return
     }
+    this.exhausted = true
   }
 
   public fixDay() {

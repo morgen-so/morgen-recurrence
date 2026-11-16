@@ -58,6 +58,10 @@ export function iter<M extends QueryMethodTypes>(
     if (maxMs < limitMs) limitMs = maxMs
   }
 
+  if (notEmpty(bysetpos) && setposNeverMatches(options)) {
+    return emitResult(iterResult)
+  }
+
   const counterDate = DateTime.fromDate(dtstart)
   const ii = new Iterinfo(options)
   ii.rebuild(counterDate.year, counterDate.month)
@@ -130,6 +134,26 @@ export function iter<M extends QueryMethodTypes>(
 
     ii.rebuild(counterDate.year, counterDate.month)
   }
+}
+
+/**
+ * True when every BYSETPOS position lies beyond the largest set a period can
+ * have (e.g. FREQ=DAILY;BYDAY=SA,MO;BYSETPOS=2): the rule has no occurrences.
+ */
+function setposNeverMatches(o: ParsedOptions) {
+  const days =
+    o.freq === Frequency.YEARLY ? 366
+      : o.freq === Frequency.MONTHLY ? 31
+        : o.freq === Frequency.WEEKLY ? 7
+          : 1
+  const len = (a: number[] | null) => (a ? a.length : 1)
+  const times = freqIsDailyOrGreater(o.freq)
+    ? len(o.byhour) * len(o.byminute) * len(o.bysecond)
+    : o.freq === Frequency.HOURLY ? len(o.byminute) * len(o.bysecond)
+      : o.freq === Frequency.MINUTELY ? len(o.bysecond)
+        : 1
+  const max = days * times
+  return o.bysetpos.every((p) => Math.abs(p) > max)
 }
 
 function emit(ms: number, tzid: string | null | undefined, doRezone: boolean) {

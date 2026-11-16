@@ -30,6 +30,8 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
   DateTime? limit = stopAfter;
   if (until != null && (limit == null || until.isBefore(limit))) limit = until;
 
+  if (notEmpty(bysetpos) && _setposNeverMatches(o)) return;
+
   final counter = _Counter(dtstart);
   final ii = IterInfo(o);
   ii.rebuild(counter.year, counter.month);
@@ -66,6 +68,26 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
     }
     ii.rebuild(counter.year, counter.month);
   }
+}
+
+/// True when every BYSETPOS position lies beyond the largest set a period can
+/// have (e.g. FREQ=DAILY;BYDAY=SA,MO;BYSETPOS=2): the rule has no occurrences.
+bool _setposNeverMatches(ParsedOptions o) {
+  final days = switch (o.freq) {
+    RRuleFrequency.yearly => 366,
+    RRuleFrequency.monthly => 31,
+    RRuleFrequency.weekly => 7,
+    _ => 1,
+  };
+  int len(List<int>? a) => a?.length ?? 1;
+  final times = switch (o.freq) {
+    RRuleFrequency.hourly => len(o.byminute) * len(o.bysecond),
+    RRuleFrequency.minutely => len(o.bysecond),
+    RRuleFrequency.secondly => 1,
+    _ => len(o.byhour) * len(o.byminute) * len(o.bysecond),
+  };
+  final max = days * times;
+  return o.bysetpos!.every((p) => p.abs() > max);
 }
 
 bool _isFiltered(IterInfo ii, int currentDay, ParsedOptions o) {
@@ -202,25 +224,48 @@ class _Counter {
     fixDay();
   }
 
+  // Sub-daily counters follow python-dateutil's rrule._iter (rrule.js 2.8.0
+  // carried overflowing seconds/minutes by repeatedly adding the carry until
+  // BYMINUTE/BYHOUR matched, which misaligned the INTERVAL grid, skipped days
+  // or looped forever). Unreachable combinations set [exhausted].
+
+  int _modValue = 0;
+
+  /// Steps [value] by [interval] (mod [base]) until it lands in [byxxx];
+  /// returns the number of base overflows, or -1 if it never does.
+  int _modDistance(int value, int interval, List<int> byxxx, int base) {
+    var acc = 0;
+    for (var i = 1; i <= base; i++) {
+      value += interval;
+      final div = floorDiv(value, base);
+      value -= div * base;
+      acc += div;
+      if (byxxx.contains(value)) {
+        _modValue = value;
+        return acc;
+      }
+    }
+    return -1;
+  }
+
   void addHours(int hours, bool filtered, List<int>? byhour) {
     if (filtered) {
       // Jump to one iteration before next day.
       hour += floorDiv(23 - hour, hours) * hours;
     }
-    // The hour sequence repeats after at most 24 steps.
-    for (var steps = 0;; steps++) {
-      if (steps > 24) {
+    int ndays;
+    if (notEmpty(byhour)) {
+      ndays = _modDistance(hour, hours, byhour!, 24);
+      if (ndays < 0) {
         exhausted = true;
         return;
       }
-      hour += hours;
-      final dayDiv = floorDiv(hour, 24), hourMod = pymod(hour, 24);
-      if (dayDiv != 0) {
-        hour = hourMod;
-        addDaily(dayDiv);
-      }
-      if (!notEmpty(byhour) || byhour!.contains(hour)) break;
+      hour = _modValue;
+    } else {
+      ndays = floorDiv(hour + hours, 24);
+      hour = pymod(hour + hours, 24);
     }
+    if (ndays != 0) addDaily(ndays);
   }
 
   void addMinutes(int minutes, bool filtered, List<int>? byhour, List<int>? byminute) {
@@ -228,24 +273,26 @@ class _Counter {
       // Jump to one iteration before next day.
       minute += floorDiv(1439 - (hour * 60 + minute), minutes) * minutes;
     }
-    // (hour, minute) has 1440 states.
-    for (var steps = 0;; steps++) {
-      if (steps > 1440) {
-        exhausted = true;
-        return;
+    final reps = 1440 ~/ minutes.gcd(1440);
+    for (var j = 0; j < reps; j++) {
+      int nhours;
+      if (notEmpty(byminute)) {
+        nhours = _modDistance(minute, minutes, byminute!, 60);
+        if (nhours < 0) break;
+        minute = _modValue;
+      } else {
+        nhours = floorDiv(minute + minutes, 60);
+        minute = pymod(minute + minutes, 60);
       }
-      minute += minutes;
-      final hourDiv = floorDiv(minute, 60), minuteMod = pymod(minute, 60);
-      if (hourDiv != 0) {
-        minute = minuteMod;
-        addHours(hourDiv, false, byhour);
-        if (exhausted) return;
-      }
-      if ((!notEmpty(byhour) || byhour!.contains(hour)) &&
-          (!notEmpty(byminute) || byminute!.contains(minute))) {
-        break;
-      }
+      final ndays = floorDiv(hour + nhours, 24);
+      hour = pymod(hour + nhours, 24);
+      if (ndays != 0) addDaily(ndays);
+      if (!notEmpty(byhour) || byhour!.contains(hour)) return;
+      // Skip to the last step within this (non-matching) hour: same result
+      // as stepping through it, much cheaper for sparse BYHOUR.
+      minute += floorDiv(59 - minute, minutes) * minutes;
     }
+    exhausted = true;
   }
 
   void addSeconds(
@@ -254,25 +301,40 @@ class _Counter {
       // Jump to one iteration before next day.
       second += floorDiv(86399 - (hour * 3600 + minute * 60 + second), seconds) * seconds;
     }
-    // (hour, minute, second) has 86400 states.
-    for (var steps = 0;; steps++) {
-      if (steps > 86400) {
-        exhausted = true;
-        return;
+    final reps = 86400 ~/ seconds.gcd(86400);
+    for (var j = 0; j < reps; j++) {
+      int nminutes;
+      if (notEmpty(bysecond)) {
+        nminutes = _modDistance(second, seconds, bysecond!, 60);
+        if (nminutes < 0) break;
+        second = _modValue;
+      } else {
+        nminutes = floorDiv(second + seconds, 60);
+        second = pymod(second + seconds, 60);
       }
-      second += seconds;
-      final minuteDiv = floorDiv(second, 60), secondMod = pymod(second, 60);
-      if (minuteDiv != 0) {
-        second = secondMod;
-        addMinutes(minuteDiv, false, byhour, byminute);
-        if (exhausted) return;
+      final nhours = floorDiv(minute + nminutes, 60);
+      minute = pymod(minute + nminutes, 60);
+      if (nhours != 0) {
+        final ndays = floorDiv(hour + nhours, 24);
+        hour = pymod(hour + nhours, 24);
+        if (ndays != 0) addDaily(ndays);
       }
-      if ((!notEmpty(byhour) || byhour!.contains(hour)) &&
-          (!notEmpty(byminute) || byminute!.contains(minute)) &&
-          (!notEmpty(bysecond) || bysecond!.contains(second))) {
-        break;
+      if (notEmpty(byhour) && !byhour!.contains(hour)) {
+        // Skip to the last step within this (non-matching) hour: same result
+        // as stepping through it, much cheaper for sparse BYHOUR/BYMINUTE.
+        final k = floorDiv(3599 - (minute * 60 + second), seconds);
+        final s = second + k * seconds;
+        minute += floorDiv(s, 60);
+        second = pymod(s, 60);
+        continue;
       }
+      if (notEmpty(byminute) && !byminute!.contains(minute)) {
+        second += floorDiv(59 - second, seconds) * seconds;
+        continue;
+      }
+      if (!notEmpty(bysecond) || bysecond!.contains(second)) return;
     }
+    exhausted = true;
   }
 
   void fixDay() {
