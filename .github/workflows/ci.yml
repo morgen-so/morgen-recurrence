@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 3 * * *' # nightly: fresh fuzz seed + dateutil verification
+  workflow_dispatch:
+    inputs:
+      fuzz_seed:
+        description: Seed for the differential fuzz job (empty = run id)
+        required: false
+      fuzz_count:
+        description: Number of random rules
+        required: false
+        default: '50000'
+
+jobs:
+  # The TypeScript package on the shared corpus (fixtures/*.json), plus
+  # rrule.js's own unit tests.
+  ts:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [20, 22]
+    defaults:
+      run:
+        working-directory: packages/ts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: packages/ts/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  # The Dart package on the same corpus.
+  dart:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/dart
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: dart pub get
+      - run: dart format --output=none --set-exit-if-changed lib test bench
+      - run: dart analyze --fatal-infos
+      - run: dart test
+
+  # The committed corpus must be exactly what the TypeScript package produces
+  # (and every hand-verified expectation must hold).
+  fixtures-up-to-date:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/ts/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: packages/ts
+      - run: node tools/gen-fixtures.mjs
+      - run: git diff --exit-code fixtures/
+
+  # Differential fuzzing: fresh random rules (not in the corpus), expected
+  # values from TypeScript, checked by the Dart package.
+  fuzz:
+    runs-on: ubuntu-latest
+    needs: [ts, dart]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/ts/package-lock.json
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: stable
+      - run: npm ci && npm run build
+        working-directory: packages/ts
+      - name: Generate fresh rules
+        run: node tools/fuzz.mjs "$RUNNER_TEMP/fuzz.json" "${{ inputs.fuzz_seed || github.run_id }}" "${{ inputs.fuzz_count || '50000' }}"
+      - name: Dart must agree with TypeScript
+        working-directory: packages/dart
+        run: dart pub get && FIXTURES="$RUNNER_TEMP/fuzz.json" dart test test/conformance_test.dart
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-cases
+          path: ${{ runner.temp }}/fuzz.json
+
+  # Independent oracles for the corpus: python-dateutil and a brute-force
+  # RFC 5545 evaluator (slow: dateutil iterates never-matching rules until a
+  # timeout). Nightly, and on changes to the corpus or tools.
+  verify:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[verify]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: pip install python-dateutil==4.0.0
+      - run: python -I tools/verify/dateutil_eval.py "$RUNNER_TEMP/du.json" fixtures/*.json
+      - run: node tools/verify.mjs "$RUNNER_TEMP/du.json" fixtures/*.json

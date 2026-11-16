@@ -321,7 +321,8 @@ class IterInfo {
       // Positive values v match day v - 1; negative ones yearlen + v.
       final p = d < yl ? d + 1 : d + 1 - yl;
       final q = d < yl ? yl - d : y.nextyearlen - (d - yl);
-      final hit = (pos != null && p < 367 && pos[p] == 1) || (neg != null && q < 367 && neg[q] == 1);
+      final hit =
+          (pos != null && p < 367 && pos[p] == 1) || (neg != null && q < 367 && neg[q] == 1);
       if (!hit) return true;
     }
     return false;

@@ -49,7 +49,11 @@ List<File> _fixtureFiles() {
   return [
     for (final p in spec.split(','))
       if (FileSystemEntity.isDirectorySync(p))
-        ...(Directory(p).listSync().whereType<File>().where((f) => f.path.endsWith('.json')).toList()
+        ...(Directory(p)
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.json'))
+            .toList()
           ..sort((a, b) => a.path.compareTo(b.path)))
       else
         File(p)

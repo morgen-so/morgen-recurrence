@@ -21,7 +21,8 @@ void bench(String name, int Function() fn, {int warmup = 3, int rounds = 9}) {
     out = fn();
     times.add(sw.elapsedMicroseconds / 1000);
   }
-  print('${name.padRight(58)} ${_median(times).toStringAsFixed(2).padLeft(9)} ms  ($out occurrences)');
+  print(
+      '${name.padRight(58)} ${_median(times).toStringAsFixed(2).padLeft(9)} ms  ($out occurrences)');
 }
 
 List<Map<String, dynamic>> _load(String f) =>
@@ -41,15 +42,20 @@ int expand(List<Map<String, dynamic>> cases, int windowDays) {
 }
 
 void main() {
-  bool nonEmpty(Map<String, dynamic> c) => c['expected'] is List && (c['expected'] as List).isNotEmpty;
+  bool nonEmpty(Map<String, dynamic> c) =>
+      c['expected'] is List && (c['expected'] as List).isNotEmpty;
   final random = _load('random.json').where(nonEmpty).toList();
   final weekno = _load('weekno.json').where(nonEmpty).toList();
-  final empty = _load('random.json').where((c) => c['expected'] is List && (c['expected'] as List).isEmpty).toList();
+  final empty = _load('random.json')
+      .where((c) => c['expected'] is List && (c['expected'] as List).isEmpty)
+      .toList();
 
   print('dart ${Platform.version.split(' ').first}\n');
   bench('random.json rules (${random.length}), expand 1 year', () => expand(random, 365));
-  bench('random.json rules (${random.length}), expand 3 years', () => expand(random, 3 * 365), rounds: 5);
-  bench('weekno.json rules (${weekno.length}), expand 1 year', () => expand(weekno, 365), rounds: 5);
+  bench('random.json rules (${random.length}), expand 3 years', () => expand(random, 3 * 365),
+      rounds: 5);
+  bench('weekno.json rules (${weekno.length}), expand 1 year', () => expand(weekno, 365),
+      rounds: 5);
 
   const typical = {
     'weekly MO,WE,FR': 'FREQ=WEEKLY;BYDAY=MO,WE,FR',
@@ -72,7 +78,8 @@ void main() {
   }
 
   bench('daily, 50 years, all() with COUNT=18250', () {
-    return RRule(RRuleOptions(freq: RRuleFrequency.daily, dtstart: _parse('2000-01-01T09:00:00'), count: 18250))
+    return RRule(RRuleOptions(
+            freq: RRuleFrequency.daily, dtstart: _parse('2000-01-01T09:00:00'), count: 18250))
         .all()
         .length;
   }, rounds: 5);

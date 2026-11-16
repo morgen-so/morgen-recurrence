@@ -92,9 +92,8 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
 
 const _dayMs = 86400000;
 
-List<int> _millis(List<Time> timeset) => [
-      for (final t in timeset) ((t.hour * 60 + t.minute) * 60 + t.second) * 1000 + t.millisecond
-    ];
+List<int> _millis(List<Time> timeset) =>
+    [for (final t in timeset) ((t.hour * 60 + t.minute) * 60 + t.second) * 1000 + t.millisecond];
 
 /// True when every BYSETPOS position lies beyond the largest set a period can
 /// have (e.g. FREQ=DAILY;BYDAY=SA,MO;BYSETPOS=2): the rule has no occurrences.

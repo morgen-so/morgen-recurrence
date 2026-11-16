@@ -192,8 +192,8 @@ class RRuleOptions {
       final key = attr.substring(0, eq).toUpperCase(), value = attr.substring(eq + 1);
       switch (key) {
         case 'FREQ':
-          freq = _frequencies[value.toLowerCase()] ??
-              (throw FormatException('Invalid FREQ: $value'));
+          freq =
+              _frequencies[value.toLowerCase()] ?? (throw FormatException('Invalid FREQ: $value'));
         case 'INTERVAL':
           interval = ints(value).single;
         case 'COUNT':
