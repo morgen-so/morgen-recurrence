@@ -81,5 +81,7 @@ costs about the same as the old, incorrect one.
 
 After the recheck fixes (SKIP across periods, lazy set callbacks), timings
 are unchanged within noise: TS weekly MO,WE,FR 1,000 expansions 121 ms,
-daily 258 ms; Dart weekly 170 ms, daily 350 ms. Only SKIP=FORWARD rules use
-the new one-period buffer; other rules keep the unbuffered loop.
+daily 258 ms; Dart weekly 170 ms, daily 350 ms. Only MONTHLY SKIP=FORWARD
+rules defer anything (the dates moved into the next month); other rules keep
+the plain loop. The second recheck's changes are also within noise (TS
+weekly 113 ms, daily 245 ms; Dart weekly 175 ms, daily 355 ms).

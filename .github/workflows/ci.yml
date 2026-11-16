@@ -123,6 +123,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # Hand-checked tests of the oracle itself.
+      - run: node --test tools/verify/oracle.test.mjs
       - run: pip install python-dateutil==4.0.0
       # Slow: dateutil spins on never-matching rules until a 3 s timeout.
       - run: python -I tools/verify/dateutil_eval.py "$RUNNER_TEMP/du.json" fixtures/*.json

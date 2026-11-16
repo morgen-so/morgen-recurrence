@@ -1,6 +1,9 @@
 // Focused tests of the Dart port (copied from the mobile app).
 // The shared conformance fixtures run in conformance_test.dart.
 //
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:test/test.dart';
 import 'package:morgen_rrule/morgen_rrule.dart';
 
@@ -513,5 +516,28 @@ void main() {
           }, '2023-01-31T09:00:00'),
           ['2023-01-31T09:00:00', '2023-05-01T09:00:00']);
     });
+  });
+  // Second recheck G02: SKIP rules must not materialize a whole period
+  // before yielding. A child VM with a 64 MB heap runs the densest rule.
+  group('dense SKIP rules stay bounded (recheck G02)', () {
+    for (final freq in ['YEARLY', 'MONTHLY']) {
+      for (final skip in ['OMIT', 'BACKWARD', 'FORWARD']) {
+        test('$freq SKIP=$skip', () {
+          final r = Process.runSync(Platform.resolvedExecutable, [
+            '--old-gen-heap-size=64',
+            '--packages=.dart_tool/package_config.json',
+            'test/support/dense_skip.dart',
+            freq,
+            skip,
+          ]);
+          expect(r.exitCode, 0, reason: '${r.stderr}');
+          expect(jsonDecode(r.stdout as String), {
+            'count1': ['2024-01-01T00:00:00.000Z'],
+            'take2': ['2024-01-01T00:00:00.000Z', '2024-01-01T00:00:01.000Z'],
+            'after': '2024-01-01T00:00:01.000Z',
+          });
+        });
+      }
+    }
   });
 }

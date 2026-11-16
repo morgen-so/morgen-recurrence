@@ -256,3 +256,65 @@ describe('F07: an RDATE TZID does not become the TZID of a UTC DTSTART', () => {
     expect(set.tzid()).toBe('America/New_York')
   })
 })
+
+// Second recheck (2026-11-16): resource bounds. Each case runs in a child
+// process with a 64 MB heap; an unbounded buffer aborts it.
+describe('G01/G02: memory stays bounded by the requested results', () => {
+  // The dense EXRULE cases walk a year of seconds once (as the non-callback
+  // queries do): a few seconds of CPU, constant memory.
+  jest.setTimeout(60000)
+  const dist = path.join(__dirname, '..', 'dist', 'cjs')
+  function capped(body: string) {
+    if (!fs.existsSync(dist)) throw new Error('run `npm run build` first (dist/cjs is used)')
+    const code = `const {RRule,RRuleSet}=require(${JSON.stringify(dist)});const range=n=>Array.from({length:n},(_,i)=>i);${body}`
+    const r = spawnSync(process.execPath, ['--max-old-space-size=64', '-e', code], {
+      timeout: 50000,
+      encoding: 'utf8',
+    })
+    return r.status === 0 ? JSON.parse(r.stdout) : { status: r.status, signal: r.signal, stderr: r.stderr.slice(0, 200) }
+  }
+
+  // G01: a SECONDLY EXRULE running for a year before the first candidate.
+  const denseEx =
+    "const s=new RRuleSet();s.rdate(new Date('2024-01-01T00:00:00.500Z'));s.exrule(new RRule({freq:RRule.SECONDLY,dtstart:new Date('2023-01-01T00:00:00Z')}));"
+  it('G01: dense EXRULE before the first callback result', () => {
+    expect(capped(`${denseEx}console.log(JSON.stringify(s.all((d,i)=>i<1)))`)).toEqual(['2024-01-01T00:00:00.500Z'])
+  })
+  it('G01: callback rejecting its first eligible result', () => {
+    expect(capped(`${denseEx}console.log(JSON.stringify(s.all(()=>false)))`)).toEqual([])
+  })
+  it('G01: dense RRULE entirely excluded by a dense EXRULE, then a later RDATE', () => {
+    const body =
+      "const s=new RRuleSet();const o={freq:RRule.SECONDLY,dtstart:new Date('2024-01-01T00:00:00Z'),until:new Date('2024-01-04T00:00:00Z')};" +
+      "s.rrule(new RRule(o));s.exrule(new RRule(o));s.rdate(new Date('2024-01-05T00:00:00Z'));" +
+      'console.log(JSON.stringify(s.all((d,i)=>i<1)))'
+    expect(capped(body)).toEqual(['2024-01-05T00:00:00.000Z'])
+  })
+
+  // G02: every second of every day of the period, COUNT=1.
+  const dense = (freq: string, skip: string, extra = '') =>
+    `const r=new RRule({freq:RRule.${freq},dtstart:new Date('2024-01-01T00:00:00Z'),skip:'${skip}',bymonthday:range(31).map(x=>x+1),byhour:range(24),byminute:range(60),bysecond:range(60)${extra}});`
+  for (const freq of ['YEARLY', 'MONTHLY']) {
+    for (const skip of ['OMIT', 'BACKWARD', 'FORWARD']) {
+      it(`G02: ${freq} SKIP=${skip}, COUNT=1, after() and a callback`, () => {
+        expect(capped(`${dense(freq, skip, ',count:1')}console.log(JSON.stringify(r.all()))`)).toEqual([
+          '2024-01-01T00:00:00.000Z',
+        ])
+        expect(capped(`${dense(freq, skip)}console.log(JSON.stringify(r.after(new Date('2024-01-01T00:00:00Z'))))`)).toEqual(
+          '2024-01-01T00:00:01.000Z'
+        )
+        expect(capped(`${dense(freq, skip)}console.log(JSON.stringify(r.all((d,i)=>i<2)))`)).toEqual([
+          '2024-01-01T00:00:00.000Z',
+          '2024-01-01T00:00:01.000Z',
+        ])
+      })
+    }
+  }
+  it('G02: MONTHLY FORWARD keeps only the moved day pending (Feb 30-31 -> Mar 1)', () => {
+    // From Feb 29 23:59:59: next is Mar 1 00:00:00 (February's moved date and
+    // March's own, emitted once).
+    const body =
+      "const r=new RRule({freq:RRule.MONTHLY,dtstart:new Date('2024-02-29T23:59:59Z'),skip:'FORWARD',bymonthday:[1,29,30,31],byhour:range(24),byminute:range(60),bysecond:range(60),count:3});console.log(JSON.stringify(r.all()))"
+    expect(capped(body)).toEqual(['2024-02-29T23:59:59.000Z', '2024-03-01T00:00:00.000Z', '2024-03-01T00:00:01.000Z'])
+  })
+})

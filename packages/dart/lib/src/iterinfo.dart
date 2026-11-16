@@ -203,6 +203,10 @@ class IterInfo {
   /// Whether SKIP=FORWARD/BACKWARD is in effect (see [_addSkipped]).
   bool get skips => _skipMode != 0;
 
+  /// Whether a period can produce dates in the next period: only MONTHLY
+  /// with SKIP=FORWARD (YEARLY moves stay in the year, December has 31 days).
+  bool get spillsForward => _skipMode > 0 && options.freq == RRuleFrequency.monthly;
+
   // Reused nth-weekday mask (see rebuildMonth).
   final Uint8List _nwBuf = Uint8List(366 + 7);
   final List<int> _nwSet = [];

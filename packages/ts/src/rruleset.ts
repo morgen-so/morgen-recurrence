@@ -229,11 +229,13 @@ export class RRuleSet extends RRule {
    *
    * Expansion is bounded by demand, not by time: each RRULE, EXRULE and the
    * RDATEs are streams merged lazily. A rule stream is refilled in batches
-   * that stop after a number of results (doubling at each refill), resuming
-   * after the last instant fetched, so a callback that stops after a few
-   * dates never materializes more than a few dates of any rule, however
-   * dense (a SECONDLY rule after a year-old RDATE), and each rule is
-   * restarted from its DTSTART only O(log n) times for n results.
+   * that stop after a number of results (doubling at each refill up to
+   * MAX_BATCH), resuming after the last instant fetched. An EXRULE stream
+   * seeks to the candidate it is tested against, so the exclusions between
+   * two candidates are skipped, never stored. Memory therefore stays within
+   * a few batches per rule plus the returned dates, however dense the rules
+   * (a SECONDLY rule after a year-old RDATE, a SECONDLY EXRULE). Each refill
+   * re-runs the rule from its DTSTART, like rrule.js's own exclusion checks.
    */
   private _chronological(
     method: 'all' | 'between',
@@ -277,9 +279,7 @@ export class RRuleSet extends RRule {
       if (exdates.has(bestT)) continue
       let excluded = false
       for (let i = 0; i < exrules.length && !excluded; i++) {
-        const ex = exrules[i]
-        while (ex.peek() < bestT) ex.next()
-        excluded = ex.peek() === bestT
+        excluded = exrules[i].seek(bestT) === bestT
       }
       if (excluded) continue
       const date = new Date(bestT)
@@ -330,6 +330,9 @@ class BatchResult extends IterResult<'between'> {
   }
 }
 
+/** Largest batch a rule stream holds (dates as numbers: 512 KB). */
+const MAX_BATCH = 65536
+
 class RuleStream implements Stream {
   private buf: number[] = []
   private i = 0
@@ -339,6 +342,20 @@ class RuleStream implements Stream {
 
   constructor(private readonly rule: RRule, lo: number, private readonly hi: number) {
     this.from = lo - 1
+  }
+
+  /**
+   * First date >= t (Infinity if none), dropping the earlier ones. When the
+   * batch runs out, the next one starts at t instead of after the last date
+   * fetched.
+   */
+  seek(t: number) {
+    while (this.i < this.buf.length && this.buf[this.i] < t) this.i++
+    if (this.i >= this.buf.length && !this.done) {
+      if (t - 1 > this.from) this.from = t - 1
+      this.refill()
+    }
+    return this.peek()
   }
 
   peek() {
@@ -361,7 +378,7 @@ class RuleStream implements Stream {
     this.i = 0
     if (batch.out.length < this.budget) this.done = true
     else this.from = batch.out[batch.out.length - 1]
-    this.budget *= 2
+    if (this.budget < MAX_BATCH) this.budget *= 2
   }
 }
 

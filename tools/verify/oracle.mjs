@@ -199,26 +199,46 @@ export function oracle(c) {
   const lower = q.method === 'between' ? P(q.after) : q.method === 'after' ? P(q.dt) : -Infinity;
   const upper = q.method === 'between' ? P(q.before) : q.method === 'before' ? P(q.dt) : Infinity;
   const limit = q.limit ?? Infinity;
-  const maxKey = Math.min(r.until ?? Infinity, upper, key(daysFromCivil(Math.min(st.y + 300, 9999), 12, 31), 23, 59, 59, 999));
+  // Search horizon. Calendars repeat every 400 Gregorian years (146,097
+  // days, 20,871 weeks, 4,800 months), so 400 * INTERVAL years cover every
+  // period context a rule can see: nothing found by then means nothing ever.
+  // If the rule does produce dates and the horizon (not UNTIL or the query)
+  // ends the search before the answer is settled, the case is out of scope
+  // rather than truncated. Year 9999 is also where both packages stop.
+  const horizonYear = Math.min(st.y + 400 * r.interval, 9999);
+  const horizon = key(daysFromCivil(horizonYear, 12, 31), 23, 59, 59, 999);
+  const maxKey = Math.min(r.until ?? Infinity, upper, horizon);
+  const horizonBinds = horizonYear < 9999 && horizon < Math.min(r.until ?? Infinity, upper);
 
   // Every candidate of every period goes into one set; the occurrences are
   // that set sorted, from DTSTART, up to UNTIL, truncated to COUNT. Nothing is
   // emitted per period: with SKIP=FORWARD a period can produce dates inside
   // the next one, earlier than some of its own.
   const cand = new Set();
-  // Enough results are known once `need` candidates from DTSTART (and, for
-  // after(), past the query bound) lie before the start of the current
-  // period: no later period can produce anything earlier than its start.
-  const need = Math.min(r.count ?? Infinity, limit);
+  // Expansion may stop early once the answer is settled, judged only on
+  // candidates before the start of the current period (no later period can
+  // produce anything earlier than its start):
+  //  * COUNT is resolved once that many candidates from DTSTART are settled;
+  //  * otherwise every settled candidate is among the first COUNT, so the
+  //    query is answered once enough settled candidates satisfy the query
+  //    itself: one for after(), `limit` inside the window for all/between.
+  //    Candidates before a between() window never count towards its limit.
+  // before() has no early stop: its bound is part of maxKey.
+  const inQuery = (k) =>
+    q.method === 'after' ? (q.inc ? k >= lower : k > lower)
+      : q.method === 'between' ? (q.inc ? k >= lower && k <= upper : k > lower && k < upper)
+        : true;
+  const queryNeed = q.method === 'after' ? 1 : q.method === 'before' ? Infinity : limit;
   const enough = (before) => {
-    let n = 0;
+    let fromStart = 0, matching = 0;
     for (const k of cand) {
       if (k < startKey || k >= before || (r.until !== undefined && k > r.until)) continue;
-      if (q.method === 'after' && !(q.inc ? k >= lower : k > lower)) continue;
-      if (q.method === 'after' || ++n >= need) return true;
+      fromStart++;
+      if (inQuery(k)) matching++;
     }
-    return false;
+    return (r.count !== undefined && fromStart >= r.count) || matching >= queryNeed;
   };
+  const mayStop = r.count !== undefined || queryNeed !== Infinity;
 
   // Periods.
   const weekStart = (z) => z - pymod(weekday(z) - r.wkst, 7);
@@ -245,8 +265,11 @@ export function oracle(c) {
       periodStart = z0 + pi * r.interval;
       if (matches(periodStart)) days.push(periodStart);
     }
-    if (key(periodStart, 0, 0, 0, 0) > maxKey) break;
-    if ((need !== Infinity || q.method === 'after') && pi % 16 === 0 && enough(key(periodStart, 0, 0, 0, 0))) break;
+    if (key(periodStart, 0, 0, 0, 0) > maxKey) {
+      if (horizonBinds && [...cand].some((k) => k >= startKey)) return undefined;
+      break;
+    }
+    if (mayStop && pi % 16 === 0 && enough(key(periodStart, 0, 0, 0, 0))) break;
 
     days = [...new Set(days)].sort((a, b) => a - b);
     let set = [];

@@ -66,8 +66,10 @@ These came out of the [correctness review of 16 November 2026](docs/REVIEW-2026-
       back to "now");
     - years 0–99 and milliseconds before 1970;
     - `rrulestr` sets honour `options.dtstart`/`tzid`;
-    - set callbacks see dates in chronological order, and expansion is
-      bounded by how many dates the callback takes, not by time windows;
+    - set callbacks see dates in chronological order; rules are expanded in
+      batches of at most 65,536 dates and EXRULEs seek to each candidate, so
+      memory does not grow with how far or how densely a rule runs (CPU
+      still does, as for any query);
     - caches are invalidated by set changes, by mutated query dates and by
       adapter changes;
     - clones keep their configuration;
@@ -124,10 +126,10 @@ Current status:
   cases that carry a JSCalendar rule through `fromJsCalendar`, with their
   RFC 8984 expectations.
 - The TS package also passes rrule.js's own unit tests, the API compatibility
-  checks against upstream, and the review regression tests: 473 tests in
+  checks against upstream, and the review regression tests: 483 tests in
   total.
-- Differential fuzzing (seed 16112028, 50,000 fresh rules): TS and Dart
-  agree on all of them, and the independent oracle agrees on all 44,502 in
+- Differential fuzzing (seed 16112030, 50,000 fresh rules): TS and Dart
+  agree on all of them, and the independent oracle agrees on all 44,475 in
   its scope.
 
 ## The fixture corpus

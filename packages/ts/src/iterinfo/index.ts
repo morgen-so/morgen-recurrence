@@ -258,6 +258,14 @@ export default class Iterinfo {
   }
 
   /**
+   * Whether a period can produce dates in the next period: only MONTHLY with
+   * SKIP=FORWARD (YEARLY moves stay in the year, December has 31 days).
+   */
+  get spillsForward() {
+    return this.skipMode > 0 && this.options.freq === Frequency.MONTHLY
+  }
+
+  /**
    * RFC 7529 / RFC 8984 SKIP: a BYMONTHDAY value beyond the end of a month
    * (February 30) is an invalid date that is moved to the first day of the
    * next month (FORWARD) or the last day of the month (BACKWARD), then

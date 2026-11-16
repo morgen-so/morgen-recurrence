@@ -95,36 +95,51 @@ export function iter<M extends QueryMethodTypes>(
   // SKIP=FORWARD moves an invalid day of a MONTHLY period to the 1st of the
   // next month, so a period can produce occurrences inside the next one, and
   // after some of that period's own (BYSETPOS=-1 picking a moved 18:00 while
-  // the next period's BYSETPOS=1 picks 09:00 of the same day). Such rules
-  // buffer each period's results and only emit those before the next period
-  // starts, merged in order; exact duplicates are emitted once (RFC 8984
-  // section 4.3.3.1 removes dates already produced). No result can be later
-  // than the start of the period after the next one, so one period of
-  // lookahead is enough.
-  const pending: number[] | null = ii.skips ? [] : null
+  // the next period's BYSETPOS=1 picks 09:00 of the same day). Only those
+  // moved results are deferred: they are merged in order with the next
+  // period's results as these are generated, and exact duplicates are
+  // emitted once (RFC 8984 section 4.3.3.1 removes dates already produced).
+  // Everything else is emitted as it is generated, so memory never grows
+  // with the period. BACKWARD and YEARLY never leave their period (December
+  // has 31 days) and use the plain loop.
+  const spills = ii.spillsForward
+  let pending: number[] = []
+  let next: number[] = []
+  let pi = 0
   let lastEmitted = NaN
-  // Emits pending results < below, in order. Returns true when iteration must
-  // stop (UNTIL, COUNT, or the query is satisfied).
-  const drain = (below: number): boolean => {
-    let i = 0
-    for (; i < pending.length && pending[i] < below; i++) {
-      const res = pending[i]
-      if (res > untilWallMs) return true
-      if (res < dtstartMs || res === lastEmitted) continue
-      lastEmitted = res
-      const out = emit(res, tzid, doRezone)
-      if (doRezone && out.getTime() > untilMs) return true
-      if (!iterResult.accept(out)) return true
-      if (count) {
-        --count
-        if (!count) return true
-      }
+  // Emits one result in order. Returns true when iteration must stop (UNTIL,
+  // COUNT, or the query is satisfied).
+  const put = (res: number): boolean => {
+    if (res > untilWallMs) return true
+    if (res < dtstartMs || res === lastEmitted) return false
+    lastEmitted = res
+    const out = emit(res, tzid, doRezone)
+    if (doRezone && out.getTime() > untilMs) return true
+    if (!iterResult.accept(out)) return true
+    if (count) {
+      --count
+      if (!count) return true
     }
-    pending.splice(0, i)
     return false
   }
+  // Emits the deferred results before `below`.
+  const flush = (below: number): boolean => {
+    while (pi < pending.length && pending[pi] < below) {
+      if (put(pending[pi++])) return true
+    }
+    return false
+  }
+  // A result of a spilling period: deferred past the month's end, else
+  // emitted after the earlier deferred ones.
+  const take = (res: number, boundary: number): boolean => {
+    if (res >= boundary) {
+      next.push(res)
+      return false
+    }
+    return flush(res) || put(res)
+  }
   const finish = () => {
-    if (pending !== null) drain(Infinity)
+    if (spills) flush(Infinity)
     return emitResult(iterResult)
   }
 
@@ -136,29 +151,36 @@ export function iter<M extends QueryMethodTypes>(
     // Defensive: the counter must move forward (validated options ensure it).
     if (start <= lastStart) return finish()
     lastStart = start
-    if (pending !== null && pending.length !== 0 && drain(start)) {
-      return emitResult(iterResult)
-    }
 
     const n = ii.fillDayset(freq, counterDate.year, counterDate.month, counterDate.day)
     const filtered = ii.lastFiltered
     const base = ii.yearordinal * ONE_DAY
 
-    if (pending !== null) {
+    if (spills) {
+      const boundary = base + ii.mrange[counterDate.month] * ONE_DAY
       let produced = 0
       if (hasSetpos) {
         const poslist = buildPoslist(bysetpos, timeset, days, n, base)
         produced = poslist.length
-        for (let j = 0; j < poslist.length; j++) pending.push(poslist[j])
+        for (let j = 0; j < poslist.length; j++) {
+          if (take(poslist[j], boundary)) return emitResult(iterResult)
+        }
       } else if (timeset.length !== 0) {
         produced = n
         for (let j = 0; j < n; j++) {
           const dayMs = base + days[j] * ONE_DAY
-          for (let k = 0; k < timeset.length; k++) pending.push(dayMs + timeset[k])
+          for (let k = 0; k < timeset.length; k++) {
+            if (take(dayMs + timeset[k], boundary)) return emitResult(iterResult)
+          }
         }
       }
       emptyPeriods = produced === 0 ? emptyPeriods + 1 : 0
-      pending.sort((a, b) => a - b)
+      if (flush(Infinity)) return emitResult(iterResult)
+      const t = pending
+      pending = next
+      next = t
+      next.length = 0
+      pi = 0
     } else if (hasSetpos) {
       const poslist = buildPoslist(bysetpos, timeset, days, n, base)
       emptyPeriods = poslist.length === 0 ? emptyPeriods + 1 : 0
