@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "noEmit": true,
+    "strict": false,
+    "noImplicitAny": true,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "target": "es2018",
+    "lib": ["es2019"],
+    "types": ["jest", "node"],
+    "skipLibCheck": true
+  },
+  "include": ["./src/**/*", "./test/**/*"]
+}
