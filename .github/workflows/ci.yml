@@ -30,8 +30,8 @@ jobs:
       run:
         working-directory: packages/ts
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -50,7 +50,7 @@ jobs:
       run:
         working-directory: packages/dart
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dart-lang/setup-dart@v1
         with:
           sdk: stable
@@ -66,8 +66,8 @@ jobs:
     # Fails fast if a regression makes a rule loop forever.
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -84,8 +84,8 @@ jobs:
     needs: [ts, dart]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -103,7 +103,7 @@ jobs:
         working-directory: packages/dart
         run: dart pub get && FIXTURES="$RUNNER_TEMP/fuzz.json" dart test test/conformance_test.dart
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: fuzz-cases
           path: ${{ runner.temp }}/fuzz.json
@@ -116,11 +116,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 22
       # Hand-checked tests of the oracle itself.
