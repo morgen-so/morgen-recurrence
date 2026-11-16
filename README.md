@@ -180,6 +180,80 @@ AOT (as in the app) for Dart. Full table and analysis:
 | `DAILY;BYDAY=SA,MO;BYSETPOS=2`, 2 years | ~4 s | < 1 ms | < 1 ms |
 | `HOURLY;INTERVAL=6;BYHOUR=3` from 00:00 | never returns | < 1 ms | < 1 ms |
 
+### Why it is faster
+
+The algorithm is still rrule.js's (itself python-dateutil's): iterate period
+by period (a year, month, week, day…), work out which days of the period pass
+the BY* filters, combine them with the times of day, and emit the results in
+order. The output is the same. What changed is how much work each step does.
+I profiled with `node --cpu-prof` on real call shapes, removed the largest
+cost, and repeated. After every change, both packages had to pass the full
+corpus and a 100,000-rule TS-vs-Dart fuzz run unchanged.
+
+1. **Stop when the answer is known.**
+   - *Past the requested window.* rrule.js's `between(a, b)` only stopped
+     after it *accepted* an occurrence later than `b`. For a rule whose next
+     occurrence is years away, or that never occurs again, it kept iterating
+     up to year 9999. Now each period first checks its earliest possible
+     instant against the upper bound (and UNTIL), and the loop ends as soon as
+     no later period can contribute. This alone accounts for most of the
+     ~150× on the random corpus, which contains many such rules.
+   - *Impossible BYSETPOS.* If every position is larger than the most
+     candidates a period can hold (`DAILY;BYDAY=SA,MO;BYSETPOS=2`: at most one
+     per day), the rule is empty, which is known before iterating.
+   - *Unreachable sub-daily rules* (`HOURLY;INTERVAL=6;BYHOUR=3` from 00:00).
+     The counter's state space is finite, so the search stops after one full
+     cycle. rrule.js looped forever here.
+   - *Runaway safety net.* After 200,000 consecutive periods without a single
+     candidate, iteration stops. Periods that produce candidates reset the
+     count, so productive rules are never cut short.
+
+2. **Don't rebuild what didn't change.**
+   - *Year masks.* rrule.js recomputes per-year tables (month, weekday and
+     month-day of each day) when the year changes. But it tracked "the last
+     year" through the nth-weekday month info, which only exists for rules
+     like `BYDAY=2TU`. So for every other rule it re-sliced several
+     366-entry arrays on *every* period: once per day for DAILY. They are now
+     cached by year.
+   - *nth-weekday mask.* For "2nd Tuesday"-style rules, rrule.js allocated a
+     fresh year-long array every month. One buffer is now reused, and only
+     the few entries set the previous month are cleared. This made that case
+     about 6× faster, mostly by removing garbage-collection time.
+
+3. **Allocate less on the hot path.**
+   - *Day set.* rrule.js built a year-long array (366 entries, mostly
+     `null`) for every period, even for DAILY, where a period is one day. Now
+     a single typed buffer holds just the day indexes that passed the
+     filters, and it is reused for every period.
+   - *Dates.* rrule.js created several `Date` objects per *candidate*:
+     `fromOrdinal` for the day, `Date.UTC` in `combine` for day plus time, and
+     a `DateWithZone` wrapper per result. Candidates are now plain epoch
+     milliseconds: `yearStart + day × 86,400,000 + timeOfDay`. Comparisons
+     with DTSTART, UNTIL and the window are integer comparisons, and a single
+     `Date` (`DateTime` in Dart) is created only for each occurrence actually
+     returned.
+
+4. **Make the inner checks cheap.**
+   - *Filters.* Each candidate day is checked against BYMONTH, BYDAY,
+     BYMONTHDAY, BYYEARDAY and so on. rrule.js destructured the options and
+     ran `Array.indexOf` per day and per filter. Each filter is now a small
+     precomputed lookup table (`Uint8Array` / `Uint8List`), so a check is one
+     indexed read.
+   - *Bounds in `IterResult.accept`.* rrule.js compared `Date` objects with
+     `<` and `>`, which converts both through `valueOf()` on every call. In
+     the profile of a weekly expansion this was about 60% of the remaining
+     time. The bounds are now precomputed numbers compared with `getTime()`:
+     2× on its own.
+   - *Sub-daily rules.* When stepping by seconds or minutes, an hour (or
+     minute) that BYHOUR (or BYMINUTE) excludes is skipped in one jump to its
+     last step. The skipped steps all share the excluded hour or minute, so
+     the output is identical.
+
+The Dart package uses the same structure (lookup tables, reused buffers,
+epoch-ms candidates). That made it about 1.3–2.7× faster than the port
+previously in the mobile app, which already cached year masks but built two
+`DateTime`s per candidate.
+
 ## How each repository switches
 
 The TypeScript package is API-compatible with rrule.js for every call our
