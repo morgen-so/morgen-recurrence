@@ -14,19 +14,32 @@ export function parseString(rfcString: string): Partial<Options> {
 export function parseDtstart(line: string) {
   const options: Partial<Options> = {}
 
-  const dtstartWithZone = /DTSTART(?:;TZID=([^:=]+?))?(?::|=)([^;\s]+)/i.exec(
-    line
-  )
-
-  if (!dtstartWithZone) {
+  // Morgen fix: property parameters in any order (RFC 5545 section 3.8.2.4),
+  // e.g. DTSTART;VALUE=DATE:20240101 or DTSTART;TZID=X;VALUE=DATE-TIME:...
+  // rrule.js only accepted an optional TZID and silently ignored any other
+  // DTSTART, which then defaulted to "now".
+  const match = /DTSTART((?:;[A-Z-]+=(?:"[^"]*"|[^;:]*))*)(?::|=)([^;\s]*)/i.exec(line)
+  if (!match) {
     return options
   }
 
-  const [, tzid, dtstart] = dtstartWithZone
-
-  if (tzid) {
-    options.tzid = tzid
+  const [, params, dtstart] = match
+  let value: string | undefined
+  for (const param of params.split(';').slice(1)) {
+    const eq = param.indexOf('=')
+    const key = param.slice(0, eq).toUpperCase()
+    const val = param.slice(eq + 1).replace(/^"|"$/g, '')
+    if (key === 'TZID') options.tzid = val
+    else if (key === 'VALUE') value = val.toUpperCase()
   }
+  if (value === 'DATE' && !/^\d{8}$/.test(dtstart)) {
+    throw new Error(`Invalid DTSTART;VALUE=DATE value: ${dtstart}`)
+  }
+  if (value === 'DATE-TIME' && !/^\d{8}T\d{6}Z?$/.test(dtstart)) {
+    throw new Error(`Invalid DTSTART;VALUE=DATE-TIME value: ${dtstart}`)
+  }
+
+  // Throws on an unparseable value instead of treating DTSTART as absent.
   options.dtstart = untilStringToDate(dtstart)
   return options
 }
@@ -99,6 +112,12 @@ function parseRrule(line: string) {
         break
       case 'BYEASTER':
         options.byeaster = Number(value)
+        break
+      case 'SKIP':
+        options.skip = value.toUpperCase() as Options['skip']
+        break
+      case 'RSCALE':
+        options.rscale = value.toUpperCase()
         break
       default:
         throw new Error("Unknown RRULE property '" + key + "'")

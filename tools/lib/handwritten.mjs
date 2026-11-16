@@ -98,6 +98,60 @@ export const REGRESSIONS = [
     dtstart: '1995-01-01T08:00:00', rrule: 'FREQ=HOURLY;INTERVAL=2', query: { method: 'between', after: '2025-01-01T00:00:00', before: '2025-01-01T05:00:00', inc: true },
     expected: ['2025-01-01T00:00:00', '2025-01-01T02:00:00', '2025-01-01T04:00:00'],
   },
+  // Review 2026-11-16, R01: values that cannot be evaluated are rejected
+  // (rrule.js looped forever, or silently changed the rule).
+  { bug: 'validation', note: 'negative INTERVAL: rrule.js looped forever', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=DAILY;INTERVAL=-1;COUNT=2', query: between('2024-01-01T00:00:00', '2024-01-04T00:00:00'), expected: { error: true } },
+  { bug: 'validation', note: 'non-numeric INTERVAL: rrule.js looped forever', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=DAILY;INTERVAL=wat;COUNT=2', query: all(), expected: { error: true } },
+  { bug: 'validation', note: 'negative COUNT: rrule.js treated it as unbounded', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=DAILY;COUNT=-1', query: all(5), expected: { error: true } },
+  { bug: 'validation', note: 'BYHOUR=25: rrule.js rolled into the next day', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=DAILY;BYHOUR=25;COUNT=2', query: all(), expected: { error: true } },
+  { bug: 'validation', note: 'BYMONTHDAY=0: TS returned nothing, Dart every day', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=DAILY;BYMONTHDAY=0;COUNT=2', query: all(), expected: { error: true } },
+  { bug: 'validation', note: 'BYWEEKNO=54 does not exist', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=YEARLY;BYWEEKNO=54;COUNT=2', query: all(), expected: { error: true } },
+  { bug: 'validation', note: 'INTERVAL=0 stays rrule.js\'s empty rule', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=DAILY;INTERVAL=0;COUNT=2', query: all(), expected: [] },
+  { bug: 'leap-second', note: 'BYSECOND=60 (leap second) never occurs in floating time; it is ignored', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=DAILY;BYSECOND=0,60;COUNT=2', query: all(), expected: ['2024-01-01T09:00:00', '2024-01-02T09:00:00'] },
+  { bug: 'leap-second', note: 'a rule whose only BYSECOND is 60 has no occurrences', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=MINUTELY;BYSECOND=60;COUNT=3', query: all(), expected: [] },
+  // R03: week numbers across week-year boundaries (Monday WKST). ISO weeks:
+  // Dec 27 2021 - Jan 2 2022 is week 52 of 2021 (52 weeks); Dec 28 2020 -
+  // Jan 3 2021 is week 53 of 2020; Dec 30 2024 - Jan 5 2025 is week 1 of
+  // 2025 (52 weeks, so also week -52).
+  { bug: 'weekno', note: 'January 1-2, 2022 are in week 52 of 2021. rrule.js and dateutil: only Dec 31', dtstart: '2021-12-31T09:00:00', rrule: 'FREQ=YEARLY;BYWEEKNO=52;UNTIL=20220103T000000Z', query: all(),
+    expected: ['2021-12-31T09:00:00', '2022-01-01T09:00:00', '2022-01-02T09:00:00'] },
+  { bug: 'weekno', note: 'January 1, 2022 is in week 52, not 53. rrule.js and dateutil: also Jan 1, 2022', dtstart: '2021-01-02T09:00:00', rrule: 'FREQ=YEARLY;BYWEEKNO=53;BYDAY=SA;UNTIL=20220103T000000Z', query: all(),
+    expected: ['2021-01-02T09:00:00'] },
+  { bug: 'weekno', note: 'December 30, 2024 is in week 1 = week -52 of 2025. rrule.js and dateutil: only Jan 1', dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=YEARLY;BYWEEKNO=-52;BYDAY=MO;UNTIL=20251231T235959Z', query: all(),
+    expected: ['2024-01-01T09:00:00', '2024-12-30T09:00:00'] },
+  // R05 (RRULE form, RFC 7529): SKIP.
+  { bug: 'skip', note: 'February 31 -> last day of February', dtstart: '2024-01-31T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;RSCALE=GREGORIAN;SKIP=BACKWARD;COUNT=3', query: all(),
+    expected: ['2024-01-31T09:00:00', '2024-02-29T09:00:00', '2024-03-31T09:00:00'] },
+  { bug: 'skip', note: 'Feb 30 and 31 -> one March 1 (de-duplicated, also against March 1 itself); April 31 -> May 1', dtstart: '2024-01-30T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,30,31;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=8', query: all(),
+    expected: ['2024-01-30T09:00:00', '2024-01-31T09:00:00', '2024-02-01T09:00:00', '2024-03-01T09:00:00', '2024-03-30T09:00:00', '2024-03-31T09:00:00', '2024-04-01T09:00:00', '2024-04-30T09:00:00'] },
+  { bug: 'skip', note: 'February 29 in non-leap years -> March 1', dtstart: '2024-02-29T09:00:00', rrule: 'FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=3', query: all(),
+    expected: ['2024-02-29T09:00:00', '2025-03-01T09:00:00', '2026-03-01T09:00:00'] },
+  // R12: years below 100 and milliseconds before 1970 (TS used Date.UTC,
+  // which maps year 99 to 1999, and a negative % 1000).
+  { bug: 'historical-dates', note: 'year 99: rrule.js gave 1999', dtstart: '0099-01-01T09:00:00', rrule: 'FREQ=DAILY;COUNT=2', query: all(),
+    expected: ['0099-01-01T09:00:00', '0099-01-02T09:00:00'] },
+  { bug: 'historical-dates', note: 'milliseconds before 1970: rrule.js gave 08:59:59.500 and dropped the first day', dtstart: '1969-12-30T09:00:00.500', rrule: 'FREQ=DAILY;COUNT=2', query: all(),
+    expected: ['1969-12-30T09:00:00.500', '1969-12-31T09:00:00.500'] },
+];
+
+// JSCalendar rules (RFC 8984) whose meaning differs from a plain mapping to
+// RRULE: implicit properties (section 4.3.3.1, step 3) and skip. Hand-checked.
+const js = (frequency, extra) => ({ '@type': 'RecurrenceRule', frequency, ...extra });
+export const JSCALENDAR = [
+  { note: 'skip backward: Feb 31 -> Feb 29', dtstart: '2024-01-31T09:00:00', jscal: js('monthly', { byMonthDay: [31], skip: 'backward', count: 3 }), query: all(),
+    expected: ['2024-01-31T09:00:00', '2024-02-29T09:00:00', '2024-03-31T09:00:00'] },
+  { note: 'skip forward: Feb 31 -> Mar 1', dtstart: '2024-01-31T09:00:00', jscal: js('monthly', { byMonthDay: [31], skip: 'forward', count: 3 }), query: all(),
+    expected: ['2024-01-31T09:00:00', '2024-03-01T09:00:00', '2024-03-31T09:00:00'] },
+  { note: 'implicit byMonthDay = 31 with skip backward', dtstart: '2024-01-31T09:00:00', jscal: js('monthly', { skip: 'backward', count: 4 }), query: all(),
+    expected: ['2024-01-31T09:00:00', '2024-02-29T09:00:00', '2024-03-31T09:00:00', '2024-04-30T09:00:00'] },
+  { note: 'yearly + byMonthDay: implicit byMonth (start month). As RRULE it would be every 15th', dtstart: '2024-01-15T09:00:00', jscal: js('yearly', { byMonthDay: [15], count: 3 }), query: all(),
+    expected: ['2024-01-15T09:00:00', '2025-01-15T09:00:00', '2026-01-15T09:00:00'] },
+  { note: 'yearly + byWeekNo: implicit byDay (start weekday, Wednesday); week 1 of 2025 starts Dec 30, 2024', dtstart: '2024-01-03T09:00:00', jscal: js('yearly', { byWeekNo: [1], count: 2 }), query: all(),
+    expected: ['2024-01-03T09:00:00', '2025-01-01T09:00:00'] },
+  { note: 'yearly leap day with skip forward: implicit byMonth 2, byMonthDay 29', dtstart: '2024-02-29T09:00:00', jscal: js('yearly', { skip: 'forward', count: 3 }), query: all(),
+    expected: ['2024-02-29T09:00:00', '2025-03-01T09:00:00', '2026-03-01T09:00:00'] },
+  { note: 'control: yearly + nth byDay adds nothing (first Monday of the year)', dtstart: '2024-01-01T09:00:00', jscal: js('yearly', { byDay: [{ '@type': 'NDay', day: 'mo', nthOfPeriod: 1 }], count: 3 }), query: all(),
+    expected: ['2024-01-01T09:00:00', '2025-01-06T09:00:00', '2026-01-05T09:00:00'] },
 ];
 
 // RFC 5545 section 3.8.5.3. DTSTART is floating (the RFC uses

@@ -17,10 +17,10 @@
 // changes.
 import IterResult from '../iterresult'
 import { ParsedOptions, freqIsDailyOrGreater, QueryMethodTypes, Frequency } from '../types'
-import { MAXYEAR, ONE_DAY } from '../dateutil'
+import { MAXYEAR, ONE_DAY, utcMs } from '../dateutil'
 import Iterinfo from '../iterinfo/index'
 import { buildTimeset } from '../parseoptions'
-import { notEmpty } from '../helpers'
+import { notEmpty, pymod } from '../helpers'
 import { rezone, needsRezone } from '../timezone'
 import { buildPoslist } from './poslist'
 import { Time, DateTime } from '../datetime'
@@ -52,12 +52,17 @@ export function iter<M extends QueryMethodTypes>(
   const dtstartMs = dtstart.getTime()
   const untilMs = until ? until.getTime() : Infinity
   const doRezone = needsRezone(tzid)
+  // With a TZID converted by the adapter, UNTIL is a UTC instant (RFC 5545
+  // section 3.3.10) while candidates are wall-clock times: compare converted
+  // instants with UNTIL, and use bounds that are conservative by the largest
+  // possible offset on the wall-clock side.
+  const slack = doRezone ? REZONE_SLACK : 0
+  const untilWallMs = untilMs + slack
 
   // Floating upper bound: no period starting after it can produce a result.
-  let limitMs = untilMs
+  let limitMs = untilWallMs
   if (iterResult.maxDate) {
-    const maxMs =
-      iterResult.maxDate.getTime() + (doRezone ? REZONE_SLACK : 0)
+    const maxMs = iterResult.maxDate.getTime() + slack
     if (maxMs < limitMs) limitMs = maxMs
   }
 
@@ -66,6 +71,20 @@ export function iter<M extends QueryMethodTypes>(
   }
 
   const counterDate = DateTime.fromDate(dtstart)
+  if (freq === Frequency.WEEKLY) {
+    // Morgen fix: the first weekly period is the whole week containing
+    // DTSTART (from WKST), as for every other period. rrule.js started it at
+    // DTSTART, so BYSETPOS counted positions in a truncated week (RFC 8984
+    // section 4.3.3.1: candidates before DTSTART are removed after BYSETPOS).
+    // Days before DTSTART are still never emitted.
+    const delta = pymod(counterDate.getWeekday() - options.wkst, 7)
+    if (delta) {
+      const weekStart = new Date(utcMs(counterDate.year, counterDate.month - 1, counterDate.day - delta))
+      counterDate.year = weekStart.getUTCFullYear()
+      counterDate.month = weekStart.getUTCMonth() + 1
+      counterDate.day = weekStart.getUTCDate()
+    }
+  }
   const ii = new Iterinfo(options)
   ii.rebuild(counterDate.year, counterDate.month)
 
@@ -73,11 +92,16 @@ export function iter<M extends QueryMethodTypes>(
   const hasSetpos = notEmpty(bysetpos)
   const days = ii.days
 
+  const skips = ii.skips
+  let lastEmitted = -Infinity
+  let lastStart = -Infinity
   for (let emptyPeriods = 0; ; ) {
     if (emptyPeriods >= maxPeriods) return emitResult(iterResult)
-    if (limitMs !== Infinity && periodStart(counterDate, freq) > limitMs) {
-      return emitResult(iterResult)
-    }
+    const start = periodStart(counterDate, freq)
+    if (start > limitMs) return emitResult(iterResult)
+    // Defensive: the counter must move forward (validated options ensure it).
+    if (start <= lastStart) return emitResult(iterResult)
+    lastStart = start
 
     const n = ii.fillDayset(freq, counterDate.year, counterDate.month, counterDate.day)
     const filtered = ii.lastFiltered
@@ -88,9 +112,16 @@ export function iter<M extends QueryMethodTypes>(
       emptyPeriods = poslist.length === 0 ? emptyPeriods + 1 : 0
       for (let j = 0; j < poslist.length; j++) {
         const res = poslist[j]
-        if (res > untilMs) return emitResult(iterResult)
+        if (res > untilWallMs) return emitResult(iterResult)
         if (res >= dtstartMs) {
-          if (!iterResult.accept(emit(res, tzid, doRezone))) {
+          // SKIP: a date moved forward can repeat the next period's first day.
+          if (skips) {
+            if (res <= lastEmitted) continue
+            lastEmitted = res
+          }
+          const out = emit(res, tzid, doRezone)
+          if (doRezone && out.getTime() > untilMs) return emitResult(iterResult)
+          if (!iterResult.accept(out)) {
             return emitResult(iterResult)
           }
           if (count) {
@@ -105,9 +136,15 @@ export function iter<M extends QueryMethodTypes>(
         const dayMs = base + days[j] * ONE_DAY
         for (let k = 0; k < timeset.length; k++) {
           const res = dayMs + timeset[k]
-          if (res > untilMs) return emitResult(iterResult)
+          if (res > untilWallMs) return emitResult(iterResult)
           if (res >= dtstartMs) {
-            if (!iterResult.accept(emit(res, tzid, doRezone))) {
+            if (skips) {
+              if (res <= lastEmitted) continue
+              lastEmitted = res
+            }
+            const out = emit(res, tzid, doRezone)
+            if (doRezone && out.getTime() > untilMs) return emitResult(iterResult)
+            if (!iterResult.accept(out)) {
               return emitResult(iterResult)
             }
             if (count) {
@@ -170,18 +207,18 @@ function emit(ms: number, tzid: string | null | undefined, doRezone: boolean) {
 function periodStart(c: DateTime, freq: Frequency) {
   switch (freq) {
     case Frequency.YEARLY:
-      return Date.UTC(c.year, 0, 1)
+      return utcMs(c.year, 0, 1)
     case Frequency.MONTHLY:
-      return Date.UTC(c.year, c.month - 1, 1)
+      return utcMs(c.year, c.month - 1, 1)
     case Frequency.WEEKLY:
     case Frequency.DAILY:
-      return Date.UTC(c.year, c.month - 1, c.day)
+      return utcMs(c.year, c.month - 1, c.day)
     case Frequency.HOURLY:
-      return Date.UTC(c.year, c.month - 1, c.day, c.hour)
+      return utcMs(c.year, c.month - 1, c.day, c.hour)
     case Frequency.MINUTELY:
-      return Date.UTC(c.year, c.month - 1, c.day, c.hour, c.minute)
+      return utcMs(c.year, c.month - 1, c.day, c.hour, c.minute)
     default:
-      return Date.UTC(c.year, c.month - 1, c.day, c.hour, c.minute, c.second)
+      return utcMs(c.year, c.month - 1, c.day, c.hour, c.minute, c.second)
   }
 }
 

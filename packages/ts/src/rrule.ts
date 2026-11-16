@@ -19,6 +19,7 @@ import { optionsToString } from './optionstostring'
 import { Cache, CacheKeys } from './cache'
 import { Weekday } from './weekday'
 import { iter, DEFAULT_MAX_PERIODS } from './iter/index'
+import { getAdapterGeneration } from './timezone'
 
 // =============================================================================
 // RRule
@@ -54,6 +55,8 @@ export const DEFAULT_OPTIONS: Options = {
   byminute: null,
   bysecond: null,
   byeaster: null,
+  skip: null,
+  rscale: null,
 }
 
 export const defaultKeys = Object.keys(DEFAULT_OPTIONS) as (keyof Options)[]
@@ -135,9 +138,30 @@ export class RRule implements QueryMethods {
     return iter(iterResult, this.options, this.maxPeriods)
   }
 
+  /** Adapter generation the cached results were computed with. */
+  private _cacheGeneration = getAdapterGeneration()
+
+  /** Drops cached results (after changes to what the rule produces). */
+  protected _invalidateCache() {
+    if (this._cache) this._cache = new Cache()
+  }
+
+  private _validCache() {
+    if (!this._cache) return null
+    // Morgen: results depend on the time zone adapter; discard them when it
+    // changes.
+    const generation = getAdapterGeneration()
+    if (generation !== this._cacheGeneration) {
+      this._cache = new Cache()
+      this._cacheGeneration = generation
+    }
+    return this._cache
+  }
+
   private _cacheGet(what: CacheKeys | 'all', args?: Partial<IterArgs>) {
-    if (!this._cache) return false
-    return this._cache._cacheGet(what, args)
+    const cache = this._validCache()
+    if (!cache) return false
+    return cache._cacheGet(what, args)
   }
 
   public _cacheAdd(
@@ -145,8 +169,9 @@ export class RRule implements QueryMethods {
     value: Date[] | Date | null,
     args?: Partial<IterArgs>
   ) {
-    if (!this._cache) return
-    return this._cache._cacheAdd(what, value, args)
+    const cache = this._validCache()
+    if (!cache) return
+    return cache._cacheAdd(what, value, args)
   }
 
   /**
@@ -282,6 +307,10 @@ export class RRule implements QueryMethods {
    * as this one (cache is not cloned)
    */
   clone(): RRule {
-    return new RRule(this.origOptions)
+    // Morgen fix: keep cache enablement and maxPeriods (rrule.js dropped
+    // both; cached results themselves are not copied).
+    const rule = new RRule(this.origOptions, !this._cache)
+    rule.maxPeriods = this.maxPeriods
+    return rule
   }
 }

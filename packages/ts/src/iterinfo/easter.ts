@@ -1,3 +1,5 @@
+import { utcMs } from '../dateutil'
+
 export function easter(y: number, offset = 0) {
   const a = y % 19
   const b = Math.floor(y / 100)
@@ -13,8 +15,8 @@ export function easter(y: number, offset = 0) {
   const m = Math.floor((a + 11 * h + 22 * l) / 451)
   const month = Math.floor((h + l - 7 * m + 114) / 31)
   const day = ((h + l - 7 * m + 114) % 31) + 1
-  const date = Date.UTC(y, month - 1, day + offset)
-  const yearStart = Date.UTC(y, 0, 1)
+  const date = utcMs(y, month - 1, day + offset)
+  const yearStart = utcMs(y, 0, 1)
 
   return [Math.ceil((date - yearStart) / (1000 * 60 * 60 * 24))]
 }

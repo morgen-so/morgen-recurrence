@@ -20,11 +20,29 @@ rate says nothing about production; the shapes are what matter.
 | 3 | **unsorted or duplicate BYHOUR/BYMINUTE/BYSECOND**, e.g. `DAILY;BYHOUR=18,9` | times out of order; with COUNT or UNTIL the series ends at the wrong place (one occurrence too few or too many on the last day) | sorted; COUNT/UNTIL exact | very rare: calendar providers do not emit BYHOUR for events, and desktop/Kai reject rules with several times per day. Mostly agentic-workflow schedules (`BYHOUR=8,12,18`). Only multi-value lists in non-ascending order are affected. |
 | 4 | **MINUTELY/SECONDLY with BYHOUR or BYMINUTE** that must carry into the next hour/minute | wrong times (INTERVAL grid misaligned), skipped days, or an infinite loop | python-dateutil's results | essentially none for events. Workflow schedules could use it; desktop/Kai reject sub-daily rules. |
 | 5 | rules that **never match**, or unreachable sub-daily combinations (`HOURLY;INTERVAL=6;BYHOUR=3` from 00:00) | same empty result after seconds of CPU, or a hang | empty result immediately | rare, but each one costs seconds of CPU per expansion, on desktop's main path or in a backend request. `isRecurrenceExpansionSafe` in the sync service exists partly because of this. |
+| 6 | **values outside RFC 5545's ranges**: `INTERVAL=-1`, `INTERVAL=abc`, `COUNT=-1`, `BYHOUR=25`, `BYMONTHDAY=0`, `BYWEEKNO=54`… | a hang (negative or non-numeric INTERVAL), an unbounded series (negative COUNT), or silently shifted dates | **an exception** | rare, from hand-written or broken ICS feeds. **See "Required before rollout" below.** |
+| 7 | **BYWEEKNO** whose weeks cross a year boundary (week 1, 52, 53, negative weeks) | days of the week that falls in the neighbouring year are lost or invented | ISO 8601 week numbering with WKST | rare: providers almost never emit BYWEEKNO. |
+| 8 | **WEEKLY + BYSETPOS** with DTSTART not on the first day of the week | in the first week, positions counted from DTSTART: one extra or different first occurrence | positions counted over the whole week, as in later weeks | rare. Only the first week changes. |
+| 9 | **SKIP** (`RSCALE=GREGORIAN;SKIP=…`, RFC 7529) | rrule.js throws "Unknown RRULE property" | supported | rare; from RFC 7529-aware servers. Events that could not be expanded at all now are. |
+| 10 | **mobile: JSCalendar yearly rules with `byMonthDay` and no `byMonth`** | mobile expanded them *monthly* (e.g. every 15th) | the start month only, per RFC 8984; desktop and the backend already did this via `ensureValidYearlyRecurrence` | removes a real mobile/desktop divergence. Also yearly + `byWeekNo` only: now only the start weekday (RFC 8984), whereas desktop expands all 7 days of the week. That is very rare; the JSCalendar converter in the sync service should add `byDay` explicitly. |
+
+TS-only fixes that cannot change our current call sites (none of them uses
+these features), but matter for future ones:
+- `DTSTART;VALUE=DATE` (rrule.js used "now");
+- years 0–99 and pre-1970 milliseconds;
+- `rrulestr(..., {dtstart})` for sets;
+- RRuleSet callbacks;
+- caches and clones;
+- serialization of weekday strings and UNTIL with a TZID (now with `Z`);
+- UNTIL, RDATE and EXDATE with a time-zone adapter.
+
+See [REVIEW-2026-11-16.md](REVIEW-2026-11-16.md).
 
 What does **not** change:
 
 - every rule using only FREQ/INTERVAL/COUNT/UNTIL, plain BYDAY, a single nth
-  BYDAY, BYMONTHDAY, BYMONTH, BYYEARDAY, BYWEEKNO or WKST;
+  BYDAY, BYMONTHDAY, BYMONTH, BYYEARDAY or WKST, and BYWEEKNO away from year
+  boundaries;
 - `BYSETPOS` within the size of the set;
 - `TZID=UTC` and floating rules;
 - text (`toText`/`parseText`) and string output (`toString`).
@@ -38,9 +56,25 @@ adapter is installed. No Morgen code passes such a TZID to rrule.js: every
 `rrulestr` call builds `DTSTART;TZID=UTC:` or a TZID-less DTSTART. Check for
 `TZID=` in any new call site.
 
+## Required before rollout
+
+Invalid rules now **throw** from `rrulestr`/`new RRule` (shape 6) where
+rrule.js returned odd dates or hung. rrule.js already threw on some input
+(unknown properties, `BYSETPOS=0`), but the set is now larger. None of the
+current `expandEventRecurrence` call sites catches per event: for example
+`events.forEach(event => expandEventRecurrence(event, …))` in the backend's
+feed adapter, or the desktop `EventCollection`. One malformed rule in a user's
+ICS feed could therefore abort the whole batch.
+
+Before switching a repository, wrap each event's expansion in `try/catch`
+and treat a throwing rule as non-recurring (or skip it), logging the rule
+shape, not the rule.
+
 ### Corpus numbers (for reference, not representative of production)
 
-`node tools/impact.mjs packages/ts/node_modules/rrule`. A case can count under
+Measured on the original 6,588-case corpus, before the review fixes (shapes
+1–5). `node tools/impact.mjs packages/ts/node_modules/rrule` on the current
+corpus also reports shapes 6–9. A case can count under
 several shapes. "Hang" means it took longer than 3 s: either an infinite loop
 or iteration to year 9999.
 

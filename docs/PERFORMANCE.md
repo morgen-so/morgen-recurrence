@@ -61,3 +61,20 @@ The fork handles candidates as epoch milliseconds, keeps one reused buffer of
 the days that pass the BY* filters, uses precomputed lookup tables for the
 BY* checks, and builds a single `Date` per emitted occurrence. The Dart
 package has the same structure.
+
+## After the review fixes (16 November 2026)
+
+The correctness fixes of [REVIEW-2026-11-16.md](REVIEW-2026-11-16.md) were
+measured on an idle machine:
+
+- **TypeScript:** same speed within noise. For example, weekly MO,WE,FR
+  1,000 expansions take 113 ms (6.7× faster than rrule.js), daily 257 ms
+  (13×), and "2nd Tuesday" 20 ms (9.3×).
+- **Dart:** 2–15% slower than before the review (option validation, the
+  progress guard, the whole first week for WEEKLY rules). For example, weekly
+  MO,WE,FR takes 173 ms (was 162 ms), daily 350 ms (was 323 ms), and the
+  random corpus over 1 year 76 ms (was 72 ms). It is still faster than the
+  port previously in the mobile app.
+
+The new BYWEEKNO mask, built from the definition, walks week by week, so it
+costs about the same as the old, incorrect one.

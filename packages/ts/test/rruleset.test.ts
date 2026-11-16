@@ -725,10 +725,12 @@ describe('RRuleSet', function () {
         'RRULE:FREQ=WEEKLY',
       ]
 
+      // Morgen: UNTIL is written in UTC (with Z) when DTSTART has a TZID, as
+      // RFC 5545 section 3.3.10 requires; rrule.js 2.8.0 omitted the Z.
       expectRecurrence([original, legacy]).toBeUpdatedWithEndDate(
         [
           'DTSTART;TZID=America/New_York:20171201T080000',
-          'RRULE:FREQ=WEEKLY;UNTIL=20171224T235959',
+          'RRULE:FREQ=WEEKLY;UNTIL=20171224T235959Z',
         ].join('\n')
       )
     })

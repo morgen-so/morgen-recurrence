@@ -9,7 +9,8 @@
 // reproduced.
 import fs from 'node:fs';
 import { loadTs, evaluate } from './lib/common.mjs';
-import { randomCases, weeknoCases, subdailyCases } from './lib/random.mjs';
+import { randomCases, weeknoCases, subdailyCases, skipCases, historicalCases } from './lib/random.mjs';
+import { jscalToRRule } from './lib/jscal.mjs';
 
 const [out, seedArg, countArg] = process.argv.slice(2);
 if (!out) {
@@ -21,16 +22,24 @@ const count = Number(countArg ?? 20000);
 const lib = loadTs();
 
 const gens = [
-  ['random', randomCases(Math.round(count * 0.7), seed)],
-  ['weekno', weeknoCases(Math.round(count * 0.2), seed + 1)],
+  ['random', randomCases(Math.round(count * 0.6), seed)],
+  ['weekno', weeknoCases(Math.round(count * 0.15), seed + 1)],
   ['subdaily', subdailyCases(Math.round(count * 0.1), seed + 2)],
+  ['skip', skipCases(Math.round(count * 0.1), seed + 3)],
+  ['historical', historicalCases(Math.round(count * 0.05), seed + 4)],
 ];
 const cases = [];
 for (const [name, gen] of gens) {
   let i = 0;
   for (const c of gen) {
     const got = evaluate(lib, c);
-    cases.push({ id: `fuzz-${seed}-${name}-${i++}`, ...c, expected: got && got.error ? { error: true } : got });
+    const expected = got && got.error ? { error: true } : got;
+    const out = { id: `fuzz-${seed}-${name}-${i++}`, ...c, expected };
+    // JSCalendar semantics (RFC 8984 implicit properties, skip).
+    const js = evaluate(lib, { ...c, rrule: jscalToRRule(c.jscal, c.dtstart) });
+    const jsExpected = js && js.error ? { error: true } : js;
+    if (JSON.stringify(jsExpected) !== JSON.stringify(expected)) out.jscalExpected = jsExpected;
+    cases.push(out);
   }
 }
 fs.writeFileSync(out, JSON.stringify({ schema: 1, name: `fuzz-${seed}`, description: `tools/fuzz.mjs seed ${seed}`, cases }));

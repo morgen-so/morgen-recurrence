@@ -44,8 +44,16 @@ export class Cache {
     if (what === 'all') {
       this.all = value as Date[]
     } else {
-      args._value = value
-      this[what].push(args as IterArgs)
+      // Morgen fix: keep copies of the query's Dates. rrule.js stored the
+      // caller's objects, so mutating a bound after a query changed the
+      // cache key but not the cached result.
+      const key = { ...args } as IterArgs
+      for (const k of Object.keys(key) as (keyof IterArgs)[]) {
+        const v = key[k]
+        if (v instanceof Date) (key as unknown as Record<string, unknown>)[k] = clone(v)
+      }
+      key._value = value
+      this[what].push(key)
     }
   }
 

@@ -10,6 +10,12 @@ import 'dateutil.dart';
 /// Same order (and index) as rrule.js `Frequency`.
 enum RRuleFrequency { yearly, monthly, weekly, daily, hourly, minutely, secondly }
 
+/// RFC 7529 SKIP / JSCalendar `skip`: what happens to invalid dates generated
+/// by BYMONTHDAY (e.g. February 30). [omit] drops them, [forward] moves them
+/// to the first day of the next month, [backward] to the last day of the
+/// month.
+enum RRuleSkip { omit, forward, backward }
+
 /// A weekday (MO=0 … SU=6), optionally with an ordinal ("2nd Monday",
 /// "last Friday") that is honoured for MONTHLY and YEARLY rules only.
 class RRuleWeekday {
@@ -64,6 +70,7 @@ class RRuleOptions {
   final List<int>? byhour;
   final List<int>? byminute;
   final List<int>? bysecond;
+  final RRuleSkip skip;
 
   const RRuleOptions({
     required this.freq,
@@ -81,6 +88,7 @@ class RRuleOptions {
     this.byhour,
     this.byminute,
     this.bysecond,
+    this.skip = RRuleSkip.omit,
   });
 
   static const _frequencies = {
@@ -138,6 +146,43 @@ class RRuleOptions {
 
     final firstDay = _days[(rule['firstDayOfWeek'] as String?)?.toLowerCase()];
     final until = rule['until'] as String?;
+
+    final skipValue = (rule['skip'] as String?)?.toLowerCase() ?? 'omit';
+    final skip = switch (skipValue) {
+      'omit' => RRuleSkip.omit,
+      'forward' => RRuleSkip.forward,
+      'backward' => RRuleSkip.backward,
+      _ => null,
+    };
+    if (skip == null) return null;
+
+    // RFC 8984 section 4.3.3.1, step 3: properties implicitly added to a
+    // JSCalendar rule. They differ from RFC 5545's (and rrule.js's) defaults,
+    // e.g. a yearly rule with byMonthDay [15] means January 15 only (an
+    // implicit byMonth), where FREQ=YEARLY;BYMONTHDAY=15 means every 15th.
+    // byHour/byMinute/bySecond defaults are the same in both.
+    final start = floating(dtstart);
+    var bymonthday = ints('byMonthDay');
+    final byyearday = ints('byYearDay');
+    final byweekno = ints('byWeekNo');
+    if (!noMonth) {
+      final hadByMonthDay = bymonthday != null, hadByDay = byweekday != null;
+      final startDay = RRuleWeekday.values[start.weekday - 1];
+      switch (freq) {
+        case RRuleFrequency.weekly:
+          byweekday ??= [startDay];
+        case RRuleFrequency.monthly:
+          if (!hadByDay && !hadByMonthDay) bymonthday = [start.day];
+        case RRuleFrequency.yearly when byyearday == null:
+          if (bymonth == null && byweekno == null && (hadByMonthDay || !hadByDay)) {
+            bymonth = [start.month];
+          }
+          if (!hadByMonthDay && byweekno == null && !hadByDay) bymonthday = [start.day];
+          if (byweekno != null && !hadByMonthDay && !hadByDay) byweekday = [startDay];
+        default:
+      }
+    }
+
     return RRuleOptions(
       freq: freq,
       dtstart: dtstart,
@@ -147,13 +192,14 @@ class RRuleOptions {
       until: until == null ? null : _parseFloating(until),
       bysetpos: ints('bySetPosition'),
       bymonth: bymonth,
-      bymonthday: ints('byMonthDay'),
-      byyearday: ints('byYearDay'),
-      byweekno: ints('byWeekNo'),
+      bymonthday: bymonthday,
+      byyearday: byyearday,
+      byweekno: byweekno,
       byweekday: byweekday,
       byhour: ints('byHour'),
       byminute: ints('byMinute'),
       bysecond: ints('bySecond'),
+      skip: skip,
     );
   }
 
@@ -176,6 +222,7 @@ class RRuleOptions {
     RRuleWeekday? wkst;
     List<int>? bysetpos, bymonth, bymonthday, byyearday, byweekno, byhour, byminute, bysecond;
     List<RRuleWeekday>? byweekday;
+    var skip = RRuleSkip.omit;
 
     List<int> ints(String v) => [
           for (final p in v.split(','))
@@ -234,6 +281,17 @@ class RRuleOptions {
           byminute = ints(value);
         case 'BYSECOND':
           bysecond = ints(value);
+        case 'SKIP':
+          skip = switch (value.toUpperCase()) {
+            'OMIT' => RRuleSkip.omit,
+            'FORWARD' => RRuleSkip.forward,
+            'BACKWARD' => RRuleSkip.backward,
+            _ => throw FormatException('Invalid SKIP: $value'),
+          };
+        case 'RSCALE':
+          if (value.toUpperCase() != 'GREGORIAN') {
+            throw FormatException('Unsupported RSCALE: $value');
+          }
         default:
           throw FormatException("Unknown RRULE property '$key'");
       }
@@ -254,6 +312,7 @@ class RRuleOptions {
       byhour: byhour,
       byminute: byminute,
       bysecond: bysecond,
+      skip: skip,
     );
   }
 
@@ -289,6 +348,7 @@ class ParsedOptions {
   final List<int>? byhour;
   final List<int>? byminute;
   final List<int>? bysecond;
+  final RRuleSkip skip;
 
   ParsedOptions._({
     required this.freq,
@@ -308,6 +368,7 @@ class ParsedOptions {
     required this.byhour,
     required this.byminute,
     required this.bysecond,
+    required this.skip,
   });
 
   bool get isDailyOrGreater => freq.index < RRuleFrequency.hourly.index;
@@ -315,7 +376,35 @@ class ParsedOptions {
 
 bool notEmpty(List? l) => l != null && l.isNotEmpty;
 
+/// Rejects values that cannot be evaluated (RFC 5545 section 3.3.10 ranges).
+/// rrule.js accepted them: INTERVAL=-1 looped forever, COUNT=-1 was
+/// unbounded, BYHOUR=25 rolled into the next day, BYMONTHDAY=0 was dropped.
+/// COUNT=0 and INTERVAL=0 stay allowed as empty rules, like rrule.js.
+void _validate(RRuleOptions o) {
+  Never fail(String what, Object? v) => throw ArgumentError('Invalid $what: $v');
+  if (o.interval < 0) fail('interval', o.interval);
+  if (o.count != null && o.count! < 0) fail('count', o.count);
+  void range(String name, List<int>? values, int min, int max, {bool signed = false}) {
+    for (final v in values ?? const <int>[]) {
+      final a = signed ? v.abs() : v;
+      if (a < min || a > max) fail(name, v);
+    }
+  }
+
+  range('bymonth', o.bymonth, 1, 12);
+  range('bymonthday', o.bymonthday, 1, 31, signed: true);
+  range('byyearday', o.byyearday, 1, 366, signed: true);
+  range('byweekno', o.byweekno, 1, 53, signed: true);
+  range('byhour', o.byhour, 0, 23);
+  range('byminute', o.byminute, 0, 59);
+  range('bysecond', o.bysecond, 0, 60);
+  for (final w in o.byweekday ?? const <RRuleWeekday>[]) {
+    if (w.n != null && w.n!.abs() > 53) fail('byweekday', w);
+  }
+}
+
 ParsedOptions parseOptions(RRuleOptions o) {
+  _validate(o);
   final dtstart = floating(o.dtstart);
   final freq = o.freq;
 
@@ -384,12 +473,22 @@ ParsedOptions parseOptions(RRuleOptions o) {
     return sortedUnique(given);
   }
 
+  // A leap second (BYSECOND=60, allowed by RFC 5545) never occurs in floating
+  // time: Dart and JavaScript dates cannot represent it. It is ignored, and a
+  // rule whose only BYSECOND value is 60 has no occurrences.
+  var bysecond = timePart(o.bysecond, RRuleFrequency.secondly, dtstart.second);
+  var count = o.count;
+  if (bysecond != null && bysecond.contains(60)) {
+    bysecond = bysecond.where((v) => v != 60).toList();
+    if (bysecond.isEmpty) count = 0;
+  }
+
   return ParsedOptions._(
     freq: freq,
     dtstart: dtstart,
     interval: o.interval,
     wkst: o.wkst?.weekday ?? 0,
-    count: o.count,
+    count: count,
     until: o.until == null ? null : floating(o.until!),
     bysetpos: bysetpos,
     bymonth: bymonth,
@@ -401,7 +500,8 @@ ParsedOptions parseOptions(RRuleOptions o) {
     bynweekday: bynweekday,
     byhour: timePart(o.byhour, RRuleFrequency.hourly, dtstart.hour),
     byminute: timePart(o.byminute, RRuleFrequency.minutely, dtstart.minute),
-    bysecond: timePart(o.bysecond, RRuleFrequency.secondly, dtstart.second),
+    bysecond: bysecond,
+    skip: o.skip,
   );
 }
 

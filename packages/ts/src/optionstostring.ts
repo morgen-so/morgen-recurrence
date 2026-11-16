@@ -1,7 +1,7 @@
 import { Options } from './types'
 import { RRule, DEFAULT_OPTIONS } from './rrule'
 import { includes, isPresent, isArray, isNumber, toArray } from './helpers'
-import { Weekday } from './weekday'
+import { Weekday, WeekdayStr } from './weekday'
 import { timeToUntilString } from './dateutil'
 import { DateWithZone } from './datewithzone'
 
@@ -57,6 +57,12 @@ export function optionsToString(options: Partial<Options>) {
               return new Weekday(wday[0], wday[1])
             }
 
+            // Morgen fix: weekday strings ('MO') are valid ByWeekday values;
+            // rrule.js passed them to new Weekday() and wrote "undefined".
+            if (typeof wday === 'string') {
+              return Weekday.fromStr(wday as WeekdayStr)
+            }
+
             return new Weekday(wday)
           })
           .toString()
@@ -67,7 +73,10 @@ export function optionsToString(options: Partial<Options>) {
         break
 
       case 'UNTIL':
-        outValue = timeToUntilString(value as number, !options.tzid)
+        // RFC 5545: UNTIL is UTC when DTSTART is UTC or has a TZID (rrule.js
+        // dropped the Z whenever a TZID was set, even TZID=UTC). Floating
+        // rules are written with Z too, as rrule.js always did.
+        outValue = timeToUntilString(value as number, true)
         break
 
       default:
@@ -85,6 +94,14 @@ export function optionsToString(options: Partial<Options>) {
     if (outValue) {
       rrule.push([key, outValue])
     }
+  }
+
+  // RFC 7529: SKIP is only valid together with RSCALE.
+  if (
+    rrule.some(([key, value]) => key === 'SKIP' && value !== 'OMIT') &&
+    !rrule.some(([key]) => key === 'RSCALE')
+  ) {
+    rrule.push(['RSCALE', 'GREGORIAN'])
   }
 
   const rules = rrule

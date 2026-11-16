@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "name": "jscalendar",
+  "description": "JSCalendar rules whose meaning differs from the plain RRULE mapping (RFC 8984 implicit properties, skip); expected values verified by hand.",
+  "generatedBy": "tools/gen-fixtures.mjs",
+  "cases": [
+    {"id":"jscal-0000","note":"skip backward: Feb 31 -> Feb 29","dtstart":"2024-01-31T09:00:00","jscal":{"@type":"RecurrenceRule","frequency":"monthly","byMonthDay":[31],"skip":"backward","count":3},"query":{"method":"all"},"expected":["2024-01-31T09:00:00","2024-02-29T09:00:00","2024-03-31T09:00:00"],"rrule":"FREQ=MONTHLY;COUNT=3;BYMONTHDAY=31;RSCALE=GREGORIAN;SKIP=BACKWARD"},
+    {"id":"jscal-0001","note":"skip forward: Feb 31 -> Mar 1","dtstart":"2024-01-31T09:00:00","jscal":{"@type":"RecurrenceRule","frequency":"monthly","byMonthDay":[31],"skip":"forward","count":3},"query":{"method":"all"},"expected":["2024-01-31T09:00:00","2024-03-01T09:00:00","2024-03-31T09:00:00"],"rrule":"FREQ=MONTHLY;COUNT=3;BYMONTHDAY=31;RSCALE=GREGORIAN;SKIP=FORWARD"},
+    {"id":"jscal-0002","note":"implicit byMonthDay = 31 with skip backward","dtstart":"2024-01-31T09:00:00","jscal":{"@type":"RecurrenceRule","frequency":"monthly","skip":"backward","count":4},"query":{"method":"all"},"expected":["2024-01-31T09:00:00","2024-02-29T09:00:00","2024-03-31T09:00:00","2024-04-30T09:00:00"],"rrule":"FREQ=MONTHLY;COUNT=4;BYMONTHDAY=31;RSCALE=GREGORIAN;SKIP=BACKWARD"},
+    {"id":"jscal-0003","note":"yearly + byMonthDay: implicit byMonth (start month). As RRULE it would be every 15th","dtstart":"2024-01-15T09:00:00","jscal":{"@type":"RecurrenceRule","frequency":"yearly","byMonthDay":[15],"count":3},"query":{"method":"all"},"expected":["2024-01-15T09:00:00","2025-01-15T09:00:00","2026-01-15T09:00:00"],"rrule":"FREQ=YEARLY;COUNT=3;BYMONTHDAY=15;BYMONTH=1"},
+    {"id":"jscal-0004","note":"yearly + byWeekNo: implicit byDay (start weekday, Wednesday); week 1 of 2025 starts Dec 30, 2024","dtstart":"2024-01-03T09:00:00","jscal":{"@type":"RecurrenceRule","frequency":"yearly","byWeekNo":[1],"count":2},"query":{"method":"all"},"expected":["2024-01-03T09:00:00","2025-01-01T09:00:00"],"rrule":"FREQ=YEARLY;COUNT=2;BYDAY=WE;BYWEEKNO=1"},
+    {"id":"jscal-0005","note":"yearly leap day with skip forward: implicit byMonth 2, byMonthDay 29","dtstart":"2024-02-29T09:00:00","jscal":{"@type":"RecurrenceRule","frequency":"yearly","skip":"forward","count":3},"query":{"method":"all"},"expected":["2024-02-29T09:00:00","2025-03-01T09:00:00","2026-03-01T09:00:00"],"rrule":"FREQ=YEARLY;COUNT=3;BYMONTHDAY=29;BYMONTH=2;RSCALE=GREGORIAN;SKIP=FORWARD"},
+    {"id":"jscal-0006","note":"control: yearly + nth byDay adds nothing (first Monday of the year)","dtstart":"2024-01-01T09:00:00","jscal":{"@type":"RecurrenceRule","frequency":"yearly","byDay":[{"@type":"NDay","day":"mo","nthOfPeriod":1}],"count":3},"query":{"method":"all"},"expected":["2024-01-01T09:00:00","2025-01-06T09:00:00","2026-01-05T09:00:00"],"rrule":"FREQ=YEARLY;COUNT=3;BYDAY=1MO"}
+  ]
+}

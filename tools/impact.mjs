@@ -51,6 +51,9 @@ function shapes(rule) {
     if (v && v.some((x, i) => i && x <= v[i - 1])) s.push(`unsorted/duplicate ${k}`);
   }
   if ((r.FREQ === 'MINUTELY' || r.FREQ === 'SECONDLY') && (r.BYHOUR || r.BYMINUTE)) s.push(`${r.FREQ} with BYHOUR/BYMINUTE`);
+  if (r.BYWEEKNO) s.push('BYWEEKNO');
+  if (r.FREQ === 'WEEKLY' && r.BYSETPOS) s.push('WEEKLY+BYSETPOS (first week)');
+  if (r.SKIP) s.push('SKIP (rrule.js rejects it)');
   return s.length ? s : ['other'];
 }
 
@@ -87,7 +90,7 @@ for (const f of fixtureFiles) {
     const got = await run(c);
     if (JSON.stringify(got) === JSON.stringify(c.expected)) continue;
     changed++;
-    const kind = got && got.hang ? 'hang' : Array.isArray(got) && Array.isArray(c.expected) && got.length === 0 ? 'none -> some' : 'different';
+    const kind = got && got.hang ? 'hang' : c.expected && c.expected.error ? 'now rejected' : Array.isArray(got) && Array.isArray(c.expected) && got.length === 0 ? 'none -> some' : 'different';
     for (const s of shapes(c.rrule)) {
       const key = `${s} [${kind}]`;
       byShape[key] = (byShape[key] ?? 0) + 1;

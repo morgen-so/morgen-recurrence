@@ -25,6 +25,27 @@ are described in the [repository README](../../README.md#what-changes-compared-w
 
   As a result, `rule.options.byhour`, `byminute` and `bysecond` are sorted and
   de-duplicated.
+- **More fixes, from the [review of 16 November 2026](../../docs/REVIEW-2026-11-16.md):**
+  - week numbers at year boundaries;
+  - the first week of WEEKLY + BYSETPOS rules;
+  - `DTSTART;VALUE=DATE` and DTSTART parameters in any order;
+  - years 0–99 and pre-1970 milliseconds;
+  - `rrulestr` sets honour `options.dtstart`/`tzid`;
+  - set callbacks run in chronological order;
+  - caches are invalidated (set changes, mutated query dates, adapter
+    changes);
+  - clones keep their configuration;
+  - weekday strings and UNTIL serialize correctly.
+- **Validation.** `new RRule()` (and so `rrulestr`, `fromString`) throws for
+  values outside RFC 5545's ranges, where rrule.js looped forever or silently
+  changed the rule: negative or non-integer INTERVAL/COUNT, `BYHOUR=25`,
+  `BYMONTHDAY=0`, `BYWEEKNO=54`, and so on. `RRule.parseString` still returns
+  what it parsed, unchecked, as before. `COUNT=0`/`INTERVAL=0` remain empty
+  rules. `BYSECOND=60` (a leap second) is accepted but never matches.
+- **SKIP** (RFC 7529): `RSCALE=GREGORIAN;SKIP=FORWARD|BACKWARD` in RRULE
+  strings, or the `skip` option (`'OMIT' | 'FORWARD' | 'BACKWARD'`). For
+  example, a monthly rule on the 31st falls on February 29 with BACKWARD.
+  rrule.js threw on these properties.
 - **Bounded iteration.** Rules that never match return quickly instead of
   iterating to year 9999 or looping forever. `rule.maxPeriods` (default
   `DEFAULT_MAX_PERIODS = 200000`) is a safety net: iteration stops after that
@@ -33,7 +54,10 @@ are described in the [repository README](../../README.md#what-changes-compared-w
   `Intl` (`dateInTimeZone`). Here a TZID other than UTC goes through the
   adapter installed with `setTimeZoneAdapter()`. Without one, results are the
   floating wall-clock times, which is also what `TZID=UTC` and TZID-less rules
-  give in both libraries.
+  give in both libraries. With an adapter, UNTIL is compared as a UTC instant
+  (RFC 5545), parsed RDATE/EXDATE values are converted according to their
+  own form (UTC, own TZID, or floating), and cached results are discarded
+  when the adapter changes.
 
   ```ts
   import moment from 'moment-timezone'

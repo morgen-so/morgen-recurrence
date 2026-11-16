@@ -10,9 +10,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { FIXTURES, loadTs, evaluate } from './lib/common.mjs';
-import { randomCases, weeknoCases, subdailyCases } from './lib/random.mjs';
+import { randomCases, weeknoCases, subdailyCases, skipCases, historicalCases } from './lib/random.mjs';
+import { jscalToRRule } from './lib/jscal.mjs';
 import { rrulejsSuiteCases } from './lib/rrulejs-suite.mjs';
-import { RFC5545, REGRESSIONS } from './lib/handwritten.mjs';
+import { RFC5545, REGRESSIONS, JSCALENDAR } from './lib/handwritten.mjs';
 
 const lib = loadTs();
 const SCHEMA = 1;
@@ -23,14 +24,22 @@ function fill(cases, prefix, check) {
     const got = evaluate(lib, c);
     const expected = got && got.error ? { error: true } : got;
     if (check) {
-      const msg = check(c, got);
+      const msg = check(c, expected);
       if (msg) {
         failures++;
         console.error(`✗ ${prefix}-${i} ${c.rrule}: ${msg}\n   got ${JSON.stringify(got)}`);
       }
     }
     const { upstreamExpected, rfcExpected, ...rest } = c;
-    return { id: `${prefix}-${String(i).padStart(4, '0')}`, ...rest, expected };
+    const out = { id: `${prefix}-${String(i).padStart(4, '0')}`, ...rest, expected };
+    // JSCalendar semantics (RFC 8984 implicit properties) can differ from the
+    // plain RRULE mapping: give the Dart JSCalendar path its own expectation.
+    if (c.jscal) {
+      const js = evaluate(lib, { ...c, rrule: jscalToRRule(c.jscal, c.dtstart) });
+      const jsExpected = js && js.error ? { error: true } : js;
+      if (JSON.stringify(jsExpected) !== JSON.stringify(expected)) out.jscalExpected = jsExpected;
+    }
+    return out;
   });
 }
 
@@ -88,6 +97,26 @@ write(
   'subdaily',
   'Random HOURLY/MINUTELY/SECONDLY rules, including unreachable BYHOUR/BYMINUTE (seed 21).',
   fill([...subdailyCases(800, 21)], 'subdaily'),
+);
+
+write(
+  'skip',
+  'Random MONTHLY/YEARLY rules with RSCALE=GREGORIAN;SKIP=FORWARD/BACKWARD (RFC 7529, JSCalendar skip) (seed 31).',
+  fill([...skipCases(1200, 31)], 'skip'),
+);
+write(
+  'historical',
+  'Random rules starting before 1970 (with milliseconds) and in years 1-999, for cross-language date arithmetic (seed 41).',
+  fill([...historicalCases(600, 41)], 'historical'),
+);
+write(
+  'jscalendar',
+  'JSCalendar rules whose meaning differs from the plain RRULE mapping (RFC 8984 implicit properties, skip); expected values verified by hand.',
+  fill(
+    JSCALENDAR.map((c) => ({ ...c, rrule: jscalToRRule(c.jscal, c.dtstart) })),
+    'jscal',
+    (c, got) => (same(got, c.expected) ? null : `expected ${JSON.stringify(c.expected)}`),
+  ),
 );
 
 if (failures) {

@@ -44,13 +44,34 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
   if (untilMs != null && (limitMs == null || untilMs < limitMs)) limitMs = untilMs;
 
   final counter = _Counter(o.dtstart);
+  if (freq == RRuleFrequency.weekly) {
+    // The first weekly period is the whole week containing DTSTART (from
+    // WKST), as for every other period. rrule.js started it at DTSTART, so
+    // BYSETPOS counted positions in a truncated week (RFC 8984 section
+    // 4.3.3.1: candidates before DTSTART are removed after BYSETPOS). Days
+    // before DTSTART are still never emitted.
+    final delta = pymod(counter.weekday - o.wkst, 7);
+    if (delta != 0) {
+      final start = DateTime.utc(counter.year, counter.month, counter.day - delta);
+      counter
+        ..year = start.year
+        ..month = start.month
+        ..day = start.day;
+    }
+  }
   final ii = IterInfo(o);
   ii.rebuild(counter.year, counter.month);
   var timeset = _millis(_makeTimeset(ii, counter, o));
   final days = ii.days;
+  final skips = ii.skips;
+  var lastEmitted = -1 << 62, lastStart = -1 << 62;
   for (var emptyPeriods = 0;;) {
     if (emptyPeriods >= maxPeriods) return;
-    if (limitMs != null && counter.periodStartMs(freq) > limitMs) return;
+    final start = counter.periodStartMs(freq);
+    if (limitMs != null && start > limitMs) return;
+    // Defensive: the counter must move forward (validated options ensure it).
+    if (start <= lastStart) return;
+    lastStart = start;
 
     final n = ii.fillDayset(freq, counter.year, counter.month, counter.day);
     final filtered = ii.lastFiltered;
@@ -59,8 +80,15 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
       final poslist = _buildPoslist(bysetpos!, timeset, days, n, base);
       emptyPeriods = poslist.isEmpty ? emptyPeriods + 1 : 0;
       for (final res in poslist) {
-        if (untilMs != null && res > untilMs) return;
+        // limitMs is the smaller of UNTIL and [stopAfter]: nothing after it is
+        // yielded, even when its period started before it.
+        if (limitMs != null && res > limitMs) return;
         if (res >= dtstartMs) {
+          // SKIP: a date moved forward can repeat the next period's first day.
+          if (skips) {
+            if (res <= lastEmitted) continue;
+            lastEmitted = res;
+          }
           yield DateTime.fromMillisecondsSinceEpoch(res, isUtc: true);
           if (count != null && --count == 0) return;
         }
@@ -71,8 +99,12 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
         final dayMs = base + days[j] * _dayMs;
         for (var k = 0; k < timeset.length; k++) {
           final res = dayMs + timeset[k];
-          if (untilMs != null && res > untilMs) return;
+          if (limitMs != null && res > limitMs) return;
           if (res >= dtstartMs) {
+            if (skips) {
+              if (res <= lastEmitted) continue;
+              lastEmitted = res;
+            }
             yield DateTime.fromMillisecondsSinceEpoch(res, isUtc: true);
             if (count != null && --count == 0) return;
           }

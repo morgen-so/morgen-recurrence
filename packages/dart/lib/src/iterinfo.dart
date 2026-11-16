@@ -28,6 +28,43 @@ class YearInfo {
       this.mdaymask, this.nmdaymask, this.wdaymask, this.mrange, this.wnomask);
 }
 
+/// Ordinal (days since 1970-01-01) of the first day of week 1 of [year]: the
+/// first week starting on [wkst] with at least 4 days in the year.
+int _week1Start(int year, int wkst) {
+  final jan1 = toOrdinal(year, 1, 1);
+  final delta = pymod(pymod(jan1 + 3, 7) - wkst, 7); // days since week start
+  return delta <= 3 ? jan1 - delta : jan1 + 7 - delta;
+}
+
+/// BYWEEKNO mask for the days of [year] (plus 7 days of the next year). Every
+/// day gets its week-year (previous, current or next) and week number, and
+/// matches positive values directly and negative values counted from the end
+/// of its own week-year. rrule.js (and python-dateutil) computed the previous
+/// year's week count from the current year's values and only spilled week 1
+/// into the next year for a literal 1.
+List<int> _weekNoMask(int year, int yearlen, int yearordinal, ParsedOptions options) {
+  final wkst = options.wkst;
+  final starts = [for (var y = year - 1; y <= year + 2; y++) _week1Start(y, wkst)];
+  final byweekno = options.byweekno!;
+  final mask = List.filled(yearlen + 7, 0);
+  // Walk week by week through the week-years overlapping the mask.
+  final end = yearordinal + yearlen + 7;
+  for (var w = 0; w < 3; w++) {
+    final numweeks = (starts[w + 1] - starts[w]) ~/ 7;
+    for (var week = 1; week <= numweeks; week++) {
+      final first = starts[w] + (week - 1) * 7;
+      if (first + 7 <= yearordinal || first >= end) continue;
+      if (!byweekno.contains(week) && !byweekno.contains(week - numweeks - 1)) continue;
+      final from = first > yearordinal ? first : yearordinal;
+      final to = first + 7 < end ? first + 7 : end;
+      for (var ord = from; ord < to; ord++) {
+        mask[ord - yearordinal] = 1;
+      }
+    }
+  }
+  return mask;
+}
+
 YearInfo rebuildYear(int year, ParsedOptions options) {
   final leap = isLeapYear(year);
   final yearlen = leap ? 366 : 365;
@@ -36,85 +73,8 @@ YearInfo rebuildYear(int year, ParsedOptions options) {
   final yearweekday = pyWeekday(year, 1, 1);
   final wdaymask = wdayMask.sublist(yearweekday);
 
-  List<int>? wnomask;
   final byweekno = options.byweekno;
-  if (notEmpty(byweekno)) {
-    final wkst = options.wkst;
-    // JavaScript arrays grow on out-of-range writes; leave room for that.
-    wnomask = List.filled(yearlen + 7 + 14, 0);
-    var no1wkst = pymod(7 - yearweekday + wkst, 7);
-    final firstwkst = no1wkst;
-    int wyearlen;
-    if (no1wkst >= 4) {
-      no1wkst = 0;
-      // Number of days in the year, plus the days we got from last year.
-      wyearlen = yearlen + pymod(yearweekday - wkst, 7);
-    } else {
-      // Number of days in the year, minus the days we left in last year.
-      wyearlen = yearlen - no1wkst;
-    }
-    final div = wyearlen ~/ 7;
-    final mod = pymod(wyearlen, 7);
-    final numweeks = div + mod ~/ 4;
-    for (var n in byweekno!) {
-      if (n < 0) n += numweeks + 1;
-      if (!(n > 0 && n <= numweeks)) continue;
-      int i;
-      if (n > 1) {
-        i = no1wkst + (n - 1) * 7;
-        if (no1wkst != firstwkst) i -= 7 - firstwkst;
-      } else {
-        i = no1wkst;
-      }
-      for (var k = 0; k < 7; k++) {
-        wnomask[i] = 1;
-        i++;
-        if (wdaymask[i] == wkst) break;
-      }
-    }
-
-    if (byweekno.contains(1)) {
-      // Check week number 1 of next year as well.
-      var i = no1wkst + numweeks * 7;
-      if (no1wkst != firstwkst) i -= 7 - firstwkst;
-      if (i < yearlen) {
-        // If week starts in next year, we don't care about it.
-        for (var j = 0; j < 7; j++) {
-          wnomask[i] = 1;
-          i += 1;
-          if (wdaymask[i] == wkst) break;
-        }
-      }
-    }
-
-    if (no1wkst != 0) {
-      // Check last week number of last year as well. If no1wkst is 0, either
-      // the year started on week start, or week number 1 got days from last
-      // year, so there are no days from last year's last week number in this
-      // year.
-      int lnumweeks;
-      if (!byweekno.contains(-1)) {
-        final lyearweekday = pyWeekday(year - 1, 1, 1);
-        var lno1wkst = pymod(7 - lyearweekday + wkst, 7);
-        final lyearlen = isLeapYear(year - 1) ? 366 : 365;
-        int weekst;
-        if (lno1wkst >= 4) {
-          lno1wkst = 0;
-          weekst = lyearlen + pymod(lyearweekday - wkst, 7);
-        } else {
-          weekst = yearlen - no1wkst;
-        }
-        lnumweeks = 52 + pymod(weekst, 7) ~/ 4;
-      } else {
-        lnumweeks = -1;
-      }
-      if (byweekno.contains(lnumweeks)) {
-        for (var i = 0; i < no1wkst; i++) {
-          wnomask[i] = 1;
-        }
-      }
-    }
-  }
+  final wnomask = notEmpty(byweekno) ? _weekNoMask(year, yearlen, yearordinal, options) : null;
 
   return YearInfo._(
     yearlen,
@@ -219,6 +179,30 @@ class IterInfo {
   /// skip ahead in sub-daily frequencies, like rrule.js).
   bool lastFiltered = false;
 
+  /// RFC 7529 SKIP: 0 = omit, 1 = forward, -1 = backward (when applicable).
+  late final int _skipMode = _computeSkipMode();
+
+  int _computeSkipMode() {
+    // SKIP only changes anything for invalid month days generated by positive
+    // BYMONTHDAY values in MONTHLY/YEARLY rules. Invalid dates never pass
+    // BYWEEKNO or BYYEARDAY (RFC 8984 section 4.3.3.1).
+    final o = options;
+    if ((o.freq != RRuleFrequency.monthly && o.freq != RRuleFrequency.yearly) ||
+        o.bymonthday.isEmpty ||
+        _hasWeekno ||
+        notEmpty(o.byyearday)) {
+      return 0;
+    }
+    return switch (o.skip) {
+      RRuleSkip.forward => 1,
+      RRuleSkip.backward => -1,
+      RRuleSkip.omit => 0,
+    };
+  }
+
+  /// Whether SKIP=FORWARD/BACKWARD is in effect (see [_addSkipped]).
+  bool get skips => _skipMode != 0;
+
   // Reused nth-weekday mask (see rebuildMonth).
   final Uint8List _nwBuf = Uint8List(366 + 7);
   final List<int> _nwSet = [];
@@ -290,7 +274,49 @@ class IterInfo {
       if (!filtered) days[n++] = d;
     }
     lastFiltered = filtered;
+    if (_skipMode != 0) n = _addSkipped(freq, month, n);
     return n;
+  }
+
+  /// RFC 7529 / RFC 8984 SKIP: a BYMONTHDAY value beyond the end of a month
+  /// (February 30) is an invalid date that is moved to the first day of the
+  /// next month (FORWARD) or the last day of the month (BACKWARD), then
+  /// checked against BYDAY, and de-duplicated within the period.
+  int _addSkipped(RRuleFrequency freq, int month, int n) {
+    final y = yearinfo;
+    final first = freq == RRuleFrequency.monthly ? month : 1;
+    final last = freq == RRuleFrequency.monthly ? month : 12;
+    var added = false;
+    for (var m = first; m <= last; m++) {
+      final bymonth = _bymonth;
+      if (bymonth != null && bymonth[m] != 1) continue;
+      final start = y.mrange[m - 1], end = y.mrange[m];
+      if (!options.bymonthday.any((v) => v > end - start)) continue;
+      final idx = _skipMode < 0 ? end - 1 : end;
+      if (!_matchesByday(idx)) continue;
+      var dup = false;
+      for (var j = 0; j < n; j++) {
+        if (days[j] == idx) dup = true;
+      }
+      if (!dup) {
+        days[n++] = idx;
+        added = true;
+      }
+    }
+    if (added) {
+      final sorted = days.sublist(0, n)..sort();
+      days.setRange(0, n, sorted);
+    }
+    return n;
+  }
+
+  /// BYDAY (plain or nth) check of one day.
+  bool _matchesByday(int d) {
+    final byweekday = _byweekday;
+    final nw = _hasNth ? monthinfo?.nwdaymask : null;
+    if (byweekday == null && nw == null) return true;
+    return (byweekday != null && byweekday[yearinfo.wdaymask[d]] == 1) ||
+        (nw != null && d < nw.length && nw[d] == 1);
   }
 
   bool isFiltered(int d) {

@@ -5,7 +5,7 @@ function gcd(a: number, b: number): number {
   while (b) [a, b] = [b, a % b]
   return a
 }
-import { MAXYEAR, monthRange } from './dateutil'
+import { MAXYEAR, monthRange, utcMs } from './dateutil'
 
 export class Time {
   public hour: number
@@ -68,7 +68,7 @@ export class DateTime extends Time {
       date.getUTCHours(),
       date.getUTCMinutes(),
       date.getUTCSeconds(),
-      date.valueOf() % 1000
+      date.getUTCMilliseconds()
     )
   }
 
@@ -89,13 +89,13 @@ export class DateTime extends Time {
 
   getWeekday() {
     // Monday = 0; 1970-01-01 was a Thursday.
-    const days = Math.floor(Date.UTC(this.year, this.month - 1, this.day) / 86400000)
+    const days = Math.floor(utcMs(this.year, this.month - 1, this.day) / 86400000)
     return pymod(days + 3, 7)
   }
 
   getTime() {
     return new Date(
-      Date.UTC(
+      utcMs(
         this.year,
         this.month - 1,
         this.day,

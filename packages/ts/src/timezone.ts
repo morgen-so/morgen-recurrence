@@ -25,10 +25,20 @@ export interface TimeZoneAdapter {
 }
 
 let adapter: TimeZoneAdapter | null = null
+let generation = 0
 
-/** Installs (or with `null` removes) the process-wide time zone adapter. */
+/**
+ * Installs (or with `null` removes) the process-wide time zone adapter.
+ * Results cached by existing rules are discarded (see getAdapterGeneration).
+ */
 export function setTimeZoneAdapter(a: TimeZoneAdapter | null) {
   adapter = a
+  generation++
+}
+
+/** Changes whenever the adapter is installed, replaced or removed. */
+export function getAdapterGeneration() {
+  return generation
 }
 
 export function getTimeZoneAdapter(): TimeZoneAdapter | null {
@@ -47,4 +57,39 @@ export function needsRezone(tzid: string | null | undefined) {
 export function rezone(date: Date, tzid: string | null | undefined): Date {
   if (adapter === null || isUTC(tzid)) return date
   return adapter.fromWallTime(date, tzid as string)
+}
+
+// -----------------------------------------------------------------------------
+// Time domain of individual RDATE/EXDATE values.
+//
+// A set converts its RDATE/EXDATE values with the set's TZID, which is right
+// for floating values. Values parsed from text can also be UTC instants
+// ("20240102T080000Z", never converted) or carry their own TZID. rrulestr
+// records that here, keyed by the Date object, so programmatic rdate() and
+// exdate() keep their meaning.
+// -----------------------------------------------------------------------------
+
+/** Marker for a value that is already a UTC instant. */
+export const UTC_INSTANT = '\u0000UTC'
+
+const valueZones = new WeakMap<Date, string>()
+
+export function setValueZone(date: Date, zone: string) {
+  valueZones.set(date, zone)
+  return date
+}
+
+/** Copy of `date` keeping its recorded time domain. */
+export function copyWithZone(date: Date) {
+  const copy = new Date(date.getTime())
+  const zone = valueZones.get(date)
+  if (zone !== undefined) valueZones.set(copy, zone)
+  return copy
+}
+
+/** Converts an RDATE/EXDATE value once, according to its time domain. */
+export function rezoneValue(date: Date, setTzid: string | null | undefined): Date {
+  const zone = valueZones.get(date)
+  if (zone === UTC_INSTANT) return date
+  return rezone(date, zone ?? setTzid)
 }

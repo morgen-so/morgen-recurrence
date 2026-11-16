@@ -82,10 +82,14 @@ void main() {
         final js = c['jscal'] as Map<String, dynamic>?;
         if (js != null) {
           jscal++;
+          // JSCalendar semantics (RFC 8984 implicit properties) can differ from
+          // the plain RRULE: then the case carries its own jscalExpected.
+          final expectedJs =
+              c.containsKey('jscalExpected') ? jsonEncode(c['jscalExpected']) : expected;
           final gotJs = jsonEncode(_evaluate(() => RRuleOptions.fromJsCalendar(js, dtstart)!, q));
-          if (gotJs != expected) {
+          if (gotJs != expectedJs) {
             failures.add('${c['id']} (jscal) ${jsonEncode(js)}\n'
-                '  expected $expected\n  got      $gotJs');
+                '  expected $expectedJs\n  got      $gotJs');
           }
         }
       }

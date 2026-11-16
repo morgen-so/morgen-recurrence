@@ -3,6 +3,28 @@ import { Time } from './datetime'
 
 type Datelike = Pick<Date, 'getTime'>
 
+/** Days in 400 Gregorian years: the calendar repeats exactly. */
+const DAYS_400_YEARS = 146097
+
+/**
+ * Date.UTC that keeps the year as given: Date.UTC maps years 0-99 to
+ * 1900-1999 (so year 99 became 1999). `month` is 0-based like Date.UTC.
+ */
+export const utcMs = function (
+  y: number,
+  month: number,
+  d = 1,
+  h = 0,
+  i = 0,
+  s = 0,
+  ms = 0
+): number {
+  if (y >= 0 && y < 100) {
+    return Date.UTC(y + 400, month, d, h, i, s, ms) - DAYS_400_YEARS * 86400000
+  }
+  return Date.UTC(y, month, d, h, i, s, ms)
+}
+
 export const datetime = function (
   y: number,
   m: number,
@@ -11,7 +33,7 @@ export const datetime = function (
   i = 0,
   s = 0
 ) {
-  return new Date(Date.UTC(y, m - 1, d, h, i, s))
+  return new Date(utcMs(y, m - 1, d, h, i, s))
 }
 
 /**
@@ -138,7 +160,7 @@ export const monthRange = function (year: number, month: number) {
 export const combine = function (date: Date, time: Date | Time) {
   time = time || date
   return new Date(
-    Date.UTC(
+    utcMs(
       date.getUTCFullYear(),
       date.getUTCMonth(),
       date.getUTCDate(),
@@ -193,7 +215,7 @@ export const untilStringToDate = function (until: string) {
   if (!bits) throw new Error(`Invalid UNTIL value: ${until}`)
 
   return new Date(
-    Date.UTC(
+    utcMs(
       parseInt(bits[1], 10),
       parseInt(bits[2], 10) - 1,
       parseInt(bits[3], 10),

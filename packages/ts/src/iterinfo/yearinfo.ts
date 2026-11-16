@@ -1,5 +1,5 @@
 import { ParsedOptions } from '../types'
-import { datetime, getWeekday, isLeapYear, toOrdinal } from '../dateutil'
+import { datetime, getWeekday, isLeapYear, toOrdinal, utcMs, ONE_DAY } from '../dateutil'
 import { empty, repeat, pymod, includes } from '../helpers'
 import {
   M365MASK,
@@ -47,101 +47,59 @@ export function rebuildYear(year: number, options: ParsedOptions) {
     return result
   }
 
-  result.wnomask = repeat(0, yearlen + 7) as number[]
-  let firstwkst: number
-  let wyearlen: number
-  let no1wkst = (firstwkst = pymod(7 - yearweekday + options.wkst, 7))
-
-  if (no1wkst >= 4) {
-    no1wkst = 0
-    // Number of days in the year, plus the days we got
-    // from last year.
-    wyearlen = result.yearlen + pymod(yearweekday - options.wkst, 7)
-  } else {
-    // Number of days in the year, minus the days we
-    // left in last year.
-    wyearlen = yearlen - no1wkst
-  }
-
-  const div = Math.floor(wyearlen / 7)
-  const mod = pymod(wyearlen, 7)
-  const numweeks = Math.floor(div + mod / 4)
-
-  for (let j = 0; j < options.byweekno.length; j++) {
-    let n = options.byweekno[j]
-    if (n < 0) {
-      n += numweeks + 1
-    }
-    if (!(n > 0 && n <= numweeks)) {
-      continue
-    }
-
-    let i: number
-    if (n > 1) {
-      i = no1wkst + (n - 1) * 7
-      if (no1wkst !== firstwkst) {
-        i -= 7 - firstwkst
-      }
-    } else {
-      i = no1wkst
-    }
-
-    for (let k = 0; k < 7; k++) {
-      result.wnomask[i] = 1
-      i++
-      if (result.wdaymask[i] === options.wkst) break
-    }
-  }
-
-  if (includes(options.byweekno, 1)) {
-    // Check week number 1 of next year as well
-    // orig-TODO : Check -numweeks for next year.
-    let i = no1wkst + numweeks * 7
-    if (no1wkst !== firstwkst) i -= 7 - firstwkst
-    if (i < yearlen) {
-      // If week starts in next year, we
-      // don't care about it.
-      for (let j = 0; j < 7; j++) {
-        result.wnomask[i] = 1
-        i += 1
-        if (result.wdaymask[i] === options.wkst) break
-      }
-    }
-  }
-
-  if (no1wkst) {
-    // Check last week number of last year as
-    // well. If no1wkst is 0, either the year
-    // started on week start, or week number 1
-    // got days from last year, so there are no
-    // days from last year's last week number in
-    // this year.
-    let lnumweeks: number
-    if (!includes(options.byweekno, -1)) {
-      const lyearweekday = getWeekday(datetime(year - 1, 1, 1))
-
-      let lno1wkst = pymod(7 - lyearweekday.valueOf() + options.wkst, 7)
-
-      const lyearlen = isLeapYear(year - 1) ? 366 : 365
-      let weekst: number
-      if (lno1wkst >= 4) {
-        lno1wkst = 0
-        weekst = lyearlen + pymod(lyearweekday - options.wkst, 7)
-      } else {
-        weekst = yearlen - no1wkst
-      }
-
-      lnumweeks = Math.floor(52 + pymod(weekst, 7) / 4)
-    } else {
-      lnumweeks = -1
-    }
-
-    if (includes(options.byweekno, lnumweeks)) {
-      for (let i = 0; i < no1wkst; i++) result.wnomask[i] = 1
-    }
-  }
-
+  result.wnomask = buildWeekNoMask(year, yearlen, yearordinal, options)
   return result
+}
+
+/**
+ * Ordinal (days since 1970-01-01) of the first day of week 1 of `year`:
+ * the first week starting on `wkst` with at least 4 days in the year.
+ */
+function week1Start(year: number, wkst: number) {
+  const jan1 = Math.round(utcMs(year, 0, 1) / ONE_DAY)
+  const delta = pymod(pymod(jan1 + 3, 7) - wkst, 7) // days since week start
+  return delta <= 3 ? jan1 - delta : jan1 + 7 - delta
+}
+
+/**
+ * BYWEEKNO mask for the days of `year` (plus 7 days of the next year, for
+ * weeks crossing into it). Morgen fix (also wrong in python-dateutil): every
+ * day gets its week-year (previous, current or next) and week number, and
+ * matches positive values directly and negative values counted from the end
+ * of *its* week-year. rrule.js computed the previous year's week count from
+ * the current year's values and only spilled week 1 into the next year for a
+ * literal 1, so e.g. January 1-2, 2022 (week 52 of 2021) were lost for
+ * BYWEEKNO=52 and taken as week 53.
+ */
+function buildWeekNoMask(
+  year: number,
+  yearlen: number,
+  yearordinal: number,
+  options: ParsedOptions
+) {
+  const wkst = options.wkst
+  const starts = [
+    week1Start(year - 1, wkst),
+    week1Start(year, wkst),
+    week1Start(year + 1, wkst),
+    week1Start(year + 2, wkst),
+  ]
+  const byweekno = options.byweekno
+  const mask = repeat(0, yearlen + 7) as number[]
+  // Walk week by week through the week-years overlapping the mask.
+  const end = yearordinal + yearlen + 7
+  for (let w = 0; w < 3; w++) {
+    const numweeks = (starts[w + 1] - starts[w]) / 7
+    for (let week = 1; week <= numweeks; week++) {
+      const first = starts[w] + (week - 1) * 7
+      if (first + 7 <= yearordinal || first >= end) continue
+      if (!includes(byweekno, week) && !includes(byweekno, week - numweeks - 1)) continue
+      for (let ord = Math.max(first, yearordinal); ord < Math.min(first + 7, end); ord++) {
+        mask[ord - yearordinal] = 1
+      }
+    }
+  }
+  return mask
 }
 
 function baseYearMasks(year: number) {

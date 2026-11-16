@@ -4,6 +4,7 @@ import { untilStringToDate } from './dateutil'
 import { includes, split } from './helpers'
 import { Options } from './types'
 import { parseString, parseDtstart } from './parsestring'
+import { setValueZone, UTC_INSTANT } from './timezone'
 
 export interface RRuleStrOptions {
   dtstart: Date | null
@@ -110,11 +111,22 @@ function buildRule(s: string, options: Partial<RRuleStrOptions>) {
   ) {
     const rset = new RRuleSet(noCache)
 
-    rset.dtstart(dtstart)
-    rset.tzid(tzid || undefined)
+    // Morgen fix: the same DTSTART/TZID precedence as a single rule (rrule.js
+    // ignored options.dtstart and options.tzid for sets, so adding an EXDATE
+    // moved the whole series to "now").
+    const setDtstart = options.dtstart || dtstart
+    const setTzid = options.tzid || tzid
+
+    rset.dtstart(setDtstart)
+    rset.tzid(setTzid || undefined)
 
     rrulevals.forEach((val) => {
-      rset.rrule(new RRule(groomRruleOptions(val, dtstart, tzid), noCache))
+      rset.rrule(
+        new RRule(
+          groomRruleOptions(val, val.dtstart || setDtstart, val.tzid || setTzid),
+          noCache
+        )
+      )
     })
 
     rdatevals.forEach((date) => {
@@ -122,14 +134,19 @@ function buildRule(s: string, options: Partial<RRuleStrOptions>) {
     })
 
     exrulevals.forEach((val) => {
-      rset.exrule(new RRule(groomRruleOptions(val, dtstart, tzid), noCache))
+      rset.exrule(
+        new RRule(
+          groomRruleOptions(val, val.dtstart || setDtstart, val.tzid || setTzid),
+          noCache
+        )
+      )
     })
 
     exdatevals.forEach((date) => {
       rset.exdate(date)
     })
 
-    if (options.compatible && options.dtstart) rset.rdate(dtstart)
+    if (options.compatible && setDtstart) rset.rdate(setDtstart)
     return rset
   }
 
@@ -247,5 +264,14 @@ function validateDateParm(parms: string[]) {
 function parseRDate(rdateval: string, parms: string[]) {
   validateDateParm(parms)
 
-  return rdateval.split(',').map((datestr) => untilStringToDate(datestr))
+  // Morgen fix: remember each value's time domain (see timezone.ts) so that
+  // a UTC value is not converted again with the set's TZID.
+  const tzidParm = parms.find((parm) => /^TZID=/i.test(parm))
+  const tzid = tzidParm ? tzidParm.slice(5) : null
+  return rdateval.split(',').map((datestr) => {
+    const date = untilStringToDate(datestr)
+    if (/Z$/i.test(datestr)) setValueZone(date, UTC_INSTANT)
+    else if (tzid) setValueZone(date, tzid)
+    return date
+  })
 }

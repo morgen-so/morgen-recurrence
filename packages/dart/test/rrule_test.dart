@@ -411,4 +411,30 @@ void main() {
           ['2024-01-02T09:00:00', '2024-01-09T09:00:00']);
     });
   });
+
+  group('iterate(before:) (review R04)', () {
+    RRule rule(String r) => RRule(RRuleOptions.parse(r, dtstart: _d('2024-01-01T09:00:00')));
+    List<String> it(RRule r, String before) =>
+        r.iterate(before: _d(before)).take(10).map(_fmt).toList();
+
+    test('bound before DTSTART yields nothing', () {
+      expect(it(rule('FREQ=DAILY'), '2024-01-01T08:00:00'), isEmpty);
+    });
+    test('bound equal to an occurrence includes it', () {
+      expect(it(rule('FREQ=DAILY'), '2024-01-02T09:00:00'),
+          ['2024-01-01T09:00:00', '2024-01-02T09:00:00']);
+    });
+    test('no dates after the bound inside a monthly period', () {
+      expect(it(rule('FREQ=MONTHLY;BYDAY=MO'), '2024-01-08T09:00:00'),
+          ['2024-01-01T09:00:00', '2024-01-08T09:00:00']);
+    });
+    test('no dates after the bound inside a yearly period', () {
+      expect(it(rule('FREQ=YEARLY;BYMONTH=1;BYDAY=MO'), '2024-01-10T00:00:00'),
+          ['2024-01-01T09:00:00', '2024-01-08T09:00:00']);
+    });
+    test('BYSETPOS branch respects the bound', () {
+      expect(it(rule('FREQ=MONTHLY;BYDAY=MO;BYSETPOS=1,-1'), '2024-01-08T09:00:00'),
+          ['2024-01-01T09:00:00']);
+    });
+  });
 }

@@ -141,3 +141,47 @@ export function* subdailyCases(count, seed) {
     yield finish(start, rule, features, query);
   }
 }
+
+/** MONTHLY/YEARLY rules with SKIP=FORWARD/BACKWARD (RFC 7529 / RFC 8984). */
+export function* skipCases(count, seed) {
+  const { int, pick, chance, sample } = prng(seed);
+  for (let i = 0; i < count; i++) {
+    const y = int(1999, 2030), m = int(1, 12);
+    const d = Math.min(pick([1, 15, 28, 29, 29, 30, 30, 31, 31, 31]), new Date(Date.UTC(y, m, 0)).getUTCDate());
+    const leap = chance(0.15);
+    const start = leap ? `${pick([2000, 2004, 2024, 2028])}-02-29T${pad(int(0, 23))}:00:00` : `${y}-${pad(m)}-${pad(d)}T${pad(int(0, 23))}:${pad(pick([0, 30]))}:00`;
+    const frequency = leap ? 'yearly' : pick(['monthly', 'monthly', 'yearly']);
+    const rule = { frequency, skip: pick(['forward', 'backward']) }, features = [frequency, `skip-${rule.skip}`];
+    if (chance(0.3)) { rule.interval = int(2, 3); features.push('interval'); }
+    if (!leap && chance(0.6)) { rule.byMonthDay = sample([1, 15, 28, 29, 30, 31, -1], int(1, 3)); features.push('byMonthDay'); }
+    if (frequency === 'yearly' && !leap && chance(0.5)) { rule.byMonth = sample(['1', '2', '4', '6', '9', '11', '12'], int(1, 3)); features.push('byMonth'); }
+    if (rule.byMonthDay && chance(0.25)) { rule.byDay = sample(DAYS, int(2, 5)).map((day) => ({ '@type': 'NDay', day })); features.push('byDay'); }
+    if (chance(0.2)) { rule.bySetPosition = [pick([1, 2, -1, -2])]; features.push('bySetPosition'); }
+    if (chance(0.5)) rule.count = int(1, 25);
+    else if (chance(0.6)) rule.until = fmt(new Date(Date.parse(`${start}Z`) + int(60, 2000) * 86400000));
+    const c = finish(start, rule, features, betweenQuery(start, 10));
+    c.rrule += `;RSCALE=GREGORIAN;SKIP=${rule.skip.toUpperCase()}`;
+    yield c;
+  }
+}
+
+/** Dates before 1970 (with milliseconds) and in years 1-999. */
+export function* historicalCases(count, seed) {
+  const { int, pick, chance, sample } = prng(seed);
+  for (let i = 0; i < count; i++) {
+    const y = pick([int(1, 99), int(100, 999), int(1582, 1969), int(1960, 1969)]);
+    const m = int(1, 12), d = Math.min(int(1, 31), new Date(Date.UTC(2001, m, 0)).getUTCDate());
+    const ms = chance(0.4) ? `.${String(int(1, 999)).padStart(3, '0')}` : '';
+    const start = `${String(y).padStart(4, '0')}-${pad(m)}-${pad(d)}T${pad(int(0, 23))}:${pad(pick([0, 15, 30]))}:00${ms}`;
+    const frequency = pick(['yearly', 'monthly', 'weekly', 'daily', 'hourly']);
+    const rule = { frequency }, features = [frequency, y < 100 ? 'year<100' : y < 1970 ? 'pre1970' : 'other'];
+    if (ms) features.push('milliseconds');
+    if (chance(0.3)) rule.interval = int(2, 4);
+    if (frequency === 'weekly' && chance(0.6)) rule.byDay = sample(DAYS, int(1, 3)).map((day) => ({ '@type': 'NDay', day }));
+    if (frequency === 'monthly' && chance(0.4)) rule.byMonthDay = [pick([1, 15, 29, 31, -1])];
+    if (frequency === 'yearly' && chance(0.3)) rule.byWeekNo = [pick([1, 10, 52, 53, -1])];
+    rule.count = int(1, 12);
+    // Leap-day starts in years where Feb 29 does not exist were clamped above.
+    yield finish(start, rule, features, { method: 'all' });
+  }
+}

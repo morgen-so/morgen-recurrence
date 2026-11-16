@@ -20,7 +20,19 @@ Times are **floating**: `DateTime`s with `isUtc: true` whose fields hold the
 wall clock. Non-UTC inputs are read by their fields. There is no time zone
 support by design: convert the results with your own time zone data.
 
-Not included: TZID, RRuleSet (RDATE/EXDATE), BYEASTER, text (NLP).
+Supported beyond rrule.js:
+- SKIP (RFC 7529 `RSCALE=GREGORIAN;SKIP=…` in `RRuleOptions.parse`; JSCalendar
+  `skip`; `RRuleOptions(skip: RRuleSkip.backward)`).
+- `fromJsCalendar` adds RFC 8984's implicit properties (section 4.3.3.1, step
+  3). For example, a yearly rule with `byMonthDay: [15]` means January 15 when
+  the rule starts in January. As an RRULE, `FREQ=YEARLY;BYMONTHDAY=15` means
+  every 15th.
+- Invalid values (outside RFC 5545's ranges) throw `ArgumentError` /
+  `FormatException`.
+
+Not included: TZID, RRuleSet (RDATE/EXDATE), BYEASTER, text (NLP). The RFC 8984
+rule that the start is always the first occurrence (and counts towards
+`count`) is left to the caller.
 
 ## Development
 

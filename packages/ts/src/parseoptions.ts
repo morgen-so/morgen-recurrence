@@ -42,6 +42,8 @@ export function parseOptions(options: Partial<Options>) {
 
   if (!opts.dtstart) opts.dtstart = new Date(new Date().setMilliseconds(0))
 
+  validateOptions(opts)
+
   if (!isPresent(opts.wkst)) {
     opts.wkst = RRule.MO.weekday
   } else if (isNumber(opts.wkst)) {
@@ -204,7 +206,86 @@ export function parseOptions(options: Partial<Options>) {
     opts.bysecond = sortedUnique(opts.bysecond)
   }
 
+  // A leap second (BYSECOND=60, allowed by RFC 5545) never occurs in
+  // floating time: neither JavaScript nor Dart dates represent it. It is
+  // ignored, and a rule whose only BYSECOND value is 60 has no occurrences.
+  if (opts.bysecond && opts.bysecond.indexOf(60) !== -1) {
+    opts.bysecond = opts.bysecond.filter((v) => v !== 60)
+    if (!opts.bysecond.length) opts.count = 0
+  }
+
   return { parsedOptions: opts as ParsedOptions }
+}
+
+/**
+ * Morgen fix: rejects values that cannot be evaluated (rrule.js accepted
+ * them silently: INTERVAL=-1 or INTERVAL=wat looped forever, COUNT=-1 was
+ * unbounded, BYHOUR=25 rolled into the next day, BYMONTHDAY=0 silently
+ * dropped). Ranges follow RFC 5545 section 3.3.10. COUNT=0 and INTERVAL=0
+ * stay allowed: they are rrule.js's empty rule.
+ */
+function validateOptions(opts: Partial<Options>) {
+  const fail = (what: string, value: unknown) => {
+    throw new Error(`Invalid ${what}: ${String(value)}`)
+  }
+  const isInt = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isInteger(v)
+
+  // INTERVAL=0 stays rrule.js's empty rule (like COUNT=0); negative or
+  // non-integer intervals used to loop forever.
+  if (!isInt(opts.interval) || opts.interval < 0) fail('interval', opts.interval)
+  if (isPresent(opts.count) && (!isInt(opts.count) || opts.count < 0)) {
+    fail('count', opts.count)
+  }
+  if (isPresent(opts.byeaster) && !isInt(opts.byeaster)) {
+    fail('byeaster', opts.byeaster)
+  }
+  if (isPresent(opts.wkst)) {
+    const w = isNumber(opts.wkst) ? opts.wkst : (opts.wkst as Weekday).weekday
+    if (!isInt(w) || w < 0 || w > 6) fail('wkst', opts.wkst)
+  }
+
+  const ranges: [keyof Options, number, number, boolean][] = [
+    // name, min, max, signed (negative values allowed, 0 never)
+    ['bymonth', 1, 12, false],
+    ['bymonthday', 1, 31, true],
+    ['byyearday', 1, 366, true],
+    ['byweekno', 1, 53, true],
+    ['byhour', 0, 23, false],
+    ['byminute', 0, 59, false],
+    ['bysecond', 0, 60, false],
+  ]
+  for (const [name, min, max, signed] of ranges) {
+    const value = opts[name] as number | number[] | null | undefined
+    if (!isPresent(value)) continue
+    for (const v of isArray(value) ? value : [value]) {
+      const abs = signed && isInt(v) ? Math.abs(v) : v
+      if (!isInt(v) || abs < min || abs > max) fail(name, v)
+    }
+  }
+
+  if (isPresent(opts.byweekday)) {
+    const days = isArray(opts.byweekday) ? opts.byweekday : [opts.byweekday]
+    for (const d of days) {
+      if (isNumber(d)) {
+        if (!isInt(d) || d < 0 || d > 6) fail('byweekday', d)
+      } else if (typeof d === 'string') {
+        if (!isWeekdayStr(d)) fail('byweekday', d)
+      } else if (d instanceof Weekday) {
+        if (!isInt(d.weekday) || d.weekday < 0 || d.weekday > 6) fail('byweekday', d)
+        if (isPresent(d.n) && (!isInt(d.n) || Math.abs(d.n) > 53)) fail('byweekday', d)
+      } else {
+        fail('byweekday', d)
+      }
+    }
+  }
+
+  if (isPresent(opts.skip) && !/^(OMIT|FORWARD|BACKWARD)$/.test(opts.skip)) {
+    fail('skip', opts.skip)
+  }
+  if (isPresent(opts.rscale) && !/^GREGORIAN$/i.test(opts.rscale)) {
+    fail('rscale (only GREGORIAN is supported)', opts.rscale)
+  }
 }
 
 /**
@@ -220,7 +301,7 @@ function sortedUnique(values: number[]): number[] {
 }
 
 export function buildTimeset(opts: ParsedOptions) {
-  const millisecondModulo = opts.dtstart.getTime() % 1000
+  const millisecondModulo = opts.dtstart.getUTCMilliseconds()
   if (!freqIsDailyOrGreater(opts.freq)) {
     return []
   }

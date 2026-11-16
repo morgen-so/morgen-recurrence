@@ -16,8 +16,8 @@ TypeScript package takes TZID conversions from an injected adapter (see
 
 ## What changes compared with rrule.js 2.8.0
 
-All are fixed identically in both packages and pinned by
-[`fixtures/regressions.json`](fixtures/regressions.json):
+Unless marked otherwise, each is fixed identically in both packages and pinned
+by [`fixtures/regressions.json`](fixtures/regressions.json):
 
 1. **Mixed plain and nth BYDAY** in MONTHLY/YEARLY rules (`BYDAY=2WE,SA`) produced
    no occurrences (rrule.js intersected the two sets). Now a day matches if it
@@ -44,6 +44,41 @@ All are fixed identically in both packages and pinned by
    looped. This was found while verifying the corpus. Calendar events
    practically never use these frequencies.
 
+These came out of the [correctness review of 16 November 2026](docs/REVIEW-2026-11-16.md):
+
+6. **Invalid values are rejected** (RFC 5545 ranges). rrule.js looped forever
+   on `INTERVAL=-1` or `INTERVAL=wat`, treated `COUNT=-1` as unbounded, rolled
+   `BYHOUR=25` into the next day, and dropped `BYMONTHDAY=0`. Such rules now
+   throw. `COUNT=0`/`INTERVAL=0` remain empty rules, and `BYSECOND=60` (a leap
+   second) never matches.
+7. **Week numbers at year boundaries** (BYWEEKNO, also wrong in python-dateutil):
+   January 1–2, 2022 are in week 52 of 2021, and December 30, 2024 is in week
+   1 = week −52 of 2025.
+8. **WEEKLY + BYSETPOS**: the first week is the whole week containing DTSTART,
+   so positions count the same as in every other week. rrule.js counted from
+   DTSTART.
+9. **SKIP** (RFC 7529 `RSCALE=GREGORIAN;SKIP=FORWARD|BACKWARD`, JSCalendar
+   `skip`): February 31 can become March 1 or February 29 instead of being
+   dropped.
+10. **TS only**:
+    - `DTSTART;VALUE=DATE` and DTSTART parameters in any order (rrule.js fell
+      back to "now");
+    - years 0–99 and milliseconds before 1970;
+    - `rrulestr` sets honour `options.dtstart`/`tzid`;
+    - set callbacks see dates in chronological order;
+    - caches are invalidated by set changes, by mutated query dates and by
+      adapter changes;
+    - clones keep their configuration;
+    - weekday strings and UNTIL serialize correctly.
+
+    With a time-zone adapter: UNTIL is compared as a UTC instant, and UTC
+    RDATE/EXDATE values are not converted twice.
+11. **Dart only**:
+    - `iterate(before:)` never yields past its bound;
+    - `fromJsCalendar` adds RFC 8984's implicit properties (a yearly rule with
+      `byMonthDay` means the start month only, as desktop already does through
+      `ensureValidYearlyRecurrence`).
+
 Performance work, with identical results (see the [benchmarks](#performance)):
 
 - iteration on epoch milliseconds instead of `Date` objects;
@@ -59,11 +94,13 @@ fixtures/               shared conformance corpus (JSON, one case per line)
 packages/ts/            @morgen-so/rrule: src/, test/ (rrule.js suite + conformance + API compat), bench/
 packages/dart/          morgen_rrule: lib/, test/ (focused tests + conformance), bench/
 tools/gen-fixtures.mjs  regenerates fixtures/ from the TypeScript package
-tools/verify.mjs        checks every fixture against python-dateutil and a brute-force RFC evaluator
+tools/verify.mjs        checks every fixture against an independent RFC oracle (and python-dateutil)
+tools/verify/oracle.mjs brute-force RRULE evaluator written from the RFCs, sharing no code with the packages
 tools/fuzz.mjs          fresh random rules for TS-vs-Dart differential runs
 tools/impact.mjs        which rules behave differently from an upstream rrule.js version
 docs/IMPACT.md          what changes for real events after switching, and how to count them
 docs/PERFORMANCE.md     benchmarks and where the time went
+docs/REVIEW-2026-11-16.md  response to the correctness review: verdicts, fixes, tests
 .github/workflows/ci.yml
 ```
 
@@ -77,22 +114,31 @@ cd packages/ts && npm ci && npm run build && npm test
 cd packages/dart && dart pub get && dart test
 ```
 
-Current status: both packages pass all **6,588** corpus cases (Dart also runs
-the 6,300 cases that carry a JSCalendar rule through `fromJsCalendar`). The TS
-package also passes rrule.js's own 381 unit tests and 35 API compatibility
-checks against upstream. Local differential fuzzing matched on 100,000 fresh
-random rules.
+Current status:
+
+- Both packages pass all **8,412** corpus cases. Dart also runs the 8,107
+  cases that carry a JSCalendar rule through `fromJsCalendar`, with their
+  RFC 8984 expectations.
+- The TS package also passes rrule.js's own unit tests, the API compatibility
+  checks against upstream, and the review regression tests: 451 tests in
+  total.
+- Differential fuzzing (seed 16112026, 50,000 fresh rules): TS and Dart
+  agree on all of them, and the independent oracle agrees on all 44,468 in
+  its scope.
 
 ## The fixture corpus
 
 | file | cases | content |
 |---|---|---|
-| `regressions.json` | 17 | one or more per fixed bug, expected values verified by hand |
+| `regressions.json` | 34 | one or more per fixed bug, expected values verified by hand |
 | `rfc5545.json` | 42 | the examples of RFC 5545 §3.8.5.3; the dates printed in the RFC are asserted |
 | `rrulejs-suite.json` | 229 | rrule.js's own `testRecurring` cases (without TZID, BYEASTER, RRuleSet) |
 | `random.json` | 4,000 | random DAILY to YEARLY rules biased to edge cases (month ends, leap days, nth weekdays, BYSETPOS, WKST) |
 | `weekno.json` | 1,500 | BYWEEKNO/BYYEARDAY with every WKST |
 | `subdaily.json` | 800 | HOURLY/MINUTELY/SECONDLY, including unreachable BYHOUR/BYMINUTE |
+| `skip.json` | 1,200 | MONTHLY/YEARLY with SKIP=FORWARD/BACKWARD (RFC 7529 / JSCalendar `skip`) |
+| `historical.json` | 600 | DTSTART before 1970 (with milliseconds) and in years 1–999 |
+| `jscalendar.json` | 7 | JSCalendar rules whose meaning differs from the plain RRULE mapping (RFC 8984), verified by hand |
 
 Format of a case (see [`fixtures/README.md`](fixtures/README.md)):
 
@@ -118,28 +164,43 @@ generation. To add a case, append it to `tools/lib/handwritten.mjs` (with
 
 ### Independent verification
 
+Expected values come from the TypeScript package, so they are checked
+against implementations that share none of its code:
+
 ```bash
+node tools/verify.mjs fixtures/*.json   # the RFC oracle alone: seconds, no dependencies
 pip install python-dateutil==4.0.0
 python -I tools/verify/dateutil_eval.py /tmp/du.json fixtures/*.json   # ~6 min: dateutil spins on never-matching rules
-node tools/verify.mjs /tmp/du.json fixtures/*.json
+node tools/verify.mjs --dateutil /tmp/du.json fixtures/*.json
 ```
 
-Current result, with no unexplained differences:
+**Primary check: `tools/verify/oracle.mjs`.** A brute-force evaluator written
+from RFC 5545 (plus RFC 7529/8984 for SKIP). It walks every day of every
+period and applies each BY* part as a plain predicate, then BYSETPOS,
+DTSTART, COUNT and UNTIL. It uses its own calendar arithmetic, with week 1
+defined as the week containing January 4. It covers DAILY to YEARLY rules
+with every BY* part, BYSETPOS, SKIP and invalid values. Result: **7,408 of
+7,408** in-scope corpus cases agree.
 
-| outcome | cases |
-|---|---|
-| identical to python-dateutil 4.0.0 | 6,336 |
-| mixed-BYDAY cases where dateutil intersects like rrule.js; all match the brute-force RFC evaluator | 98 |
-| rules dateutil rejects as empty ("byxxx generates an empty set"); fixture is empty | 86 |
-| rules where dateutil spins without finding anything; fixture is empty | 66 |
+**Secondary check: python-dateutil 4.0.0,** for the 1,004 sub-daily and
+leap-second cases outside the oracle's scope. Known differences are reported
+separately:
+- dateutil rejects rules whose BY* parts can never match (fixture: empty);
+- it spins on never-matching rules (fixture: empty);
+- it drops DTSTART milliseconds.
 
-The brute-force evaluator also agrees on all 530 cases in its scope
-(MONTHLY/YEARLY with BYDAY, including BYSETPOS).
+It also disagrees with the oracle where the oracle confirmed this package:
+mixed BYDAY, week numbers, weekly BYSETPOS and SKIP. Those are bugs or gaps
+in dateutil.
+
+CI runs the oracle on the corpus and on every fresh fuzz batch, and the
+dateutil check on every push.
 
 ### Differential fuzzing
 
 ```bash
 node tools/fuzz.mjs /tmp/fuzz.json 12345 50000
+node tools/verify.mjs /tmp/fuzz.json   # the oracle checks the TS expectations
 (cd packages/dart && FIXTURES=/tmp/fuzz.json dart test test/conformance_test.dart)
 ```
 
@@ -162,6 +223,15 @@ setTimeZoneAdapter({
   fromWallTime: (wall, tzid) => moment.tz(wall.toISOString().slice(0, 23), tzid).toDate(),
 })
 ```
+
+With an adapter, UNTIL is compared as the UTC instant RFC 5545 requires for
+zoned rules. Each parsed RDATE/EXDATE value is converted once, according to
+its own form: a UTC `…Z` value as is, a `;TZID=` value with its own zone, a
+floating value with the set's zone. Changing the adapter discards cached
+results.
+
+DST gaps and folds are the adapter's business; the engine is floating by
+design.
 
 The Dart package has no TZID at all; callers convert the floating results.
 
@@ -255,6 +325,11 @@ previously in the mobile app, which already cached year masks but built two
 `DateTime`s per candidate.
 
 ## How each repository switches
+
+**First, in every repository:** wrap each event's `expandEventRecurrence`
+call in `try/catch`. Rules with values outside RFC 5545's ranges now throw
+instead of hanging or producing odd dates; see
+[docs/IMPACT.md](docs/IMPACT.md#required-before-rollout).
 
 The TypeScript package is API-compatible with rrule.js for every call our
 repos make. These are listed in [packages/ts/README.md](packages/ts/README.md#api-used-by-morgen)
