@@ -59,20 +59,24 @@ These came out of the [correctness review of 16 November 2026](docs/REVIEW-2026-
    DTSTART.
 9. **SKIP** (RFC 7529 `RSCALE=GREGORIAN;SKIP=FORWARD|BACKWARD`, JSCalendar
    `skip`): February 31 can become March 1 or February 29 instead of being
-   dropped.
+   dropped. A date moved into the next month is ordered among that month's
+   own dates, and its nth BYDAY is checked within the month it lands in.
 10. **TS only**:
     - `DTSTART;VALUE=DATE` and DTSTART parameters in any order (rrule.js fell
       back to "now");
     - years 0–99 and milliseconds before 1970;
     - `rrulestr` sets honour `options.dtstart`/`tzid`;
-    - set callbacks see dates in chronological order;
+    - set callbacks see dates in chronological order, and expansion is
+      bounded by how many dates the callback takes, not by time windows;
     - caches are invalidated by set changes, by mutated query dates and by
       adapter changes;
     - clones keep their configuration;
     - weekday strings and UNTIL serialize correctly.
 
-    With a time-zone adapter: UNTIL is compared as a UTC instant, and UTC
-    RDATE/EXDATE values are not converted twice.
+    With a time-zone adapter: UNTIL is compared as a UTC instant, and each
+    RDATE/EXDATE value keeps its own time domain (UTC, its own TZID, or the
+    set's) when it is converted, ordered, de-duplicated and serialized. An
+    RDATE's TZID no longer becomes the zone of a UTC DTSTART.
 11. **Dart only**:
     - `iterate(before:)` never yields past its bound;
     - `fromJsCalendar` adds RFC 8984's implicit properties (a yearly rule with
@@ -116,27 +120,28 @@ cd packages/dart && dart pub get && dart test
 
 Current status:
 
-- Both packages pass all **8,412** corpus cases. Dart also runs the 8,107
+- Both packages pass all **9,425** corpus cases. Dart also runs the 9,107
   cases that carry a JSCalendar rule through `fromJsCalendar`, with their
   RFC 8984 expectations.
 - The TS package also passes rrule.js's own unit tests, the API compatibility
-  checks against upstream, and the review regression tests: 451 tests in
+  checks against upstream, and the review regression tests: 473 tests in
   total.
-- Differential fuzzing (seed 16112026, 50,000 fresh rules): TS and Dart
-  agree on all of them, and the independent oracle agrees on all 44,468 in
+- Differential fuzzing (seed 16112028, 50,000 fresh rules): TS and Dart
+  agree on all of them, and the independent oracle agrees on all 44,502 in
   its scope.
 
 ## The fixture corpus
 
 | file | cases | content |
 |---|---|---|
-| `regressions.json` | 34 | one or more per fixed bug, expected values verified by hand |
+| `regressions.json` | 47 | one or more per fixed bug, expected values verified by hand |
 | `rfc5545.json` | 42 | the examples of RFC 5545 §3.8.5.3; the dates printed in the RFC are asserted |
 | `rrulejs-suite.json` | 229 | rrule.js's own `testRecurring` cases (without TZID, BYEASTER, RRuleSet) |
 | `random.json` | 4,000 | random DAILY to YEARLY rules biased to edge cases (month ends, leap days, nth weekdays, BYSETPOS, WKST) |
 | `weekno.json` | 1,500 | BYWEEKNO/BYYEARDAY with every WKST |
 | `subdaily.json` | 800 | HOURLY/MINUTELY/SECONDLY, including unreachable BYHOUR/BYMINUTE |
 | `skip.json` | 1,200 | MONTHLY/YEARLY with SKIP=FORWARD/BACKWARD (RFC 7529 / JSCalendar `skip`) |
+| `skip-overlap.json` | 1,000 | SKIP with several hours, BYSETPOS and nth BYDAY: moved dates inside the next period, all four queries |
 | `historical.json` | 600 | DTSTART before 1970 (with milliseconds) and in years 1–999 |
 | `jscalendar.json` | 7 | JSCalendar rules whose meaning differs from the plain RRULE mapping (RFC 8984), verified by hand |
 
@@ -176,11 +181,12 @@ node tools/verify.mjs --dateutil /tmp/du.json fixtures/*.json
 
 **Primary check: `tools/verify/oracle.mjs`.** A brute-force evaluator written
 from RFC 5545 (plus RFC 7529/8984 for SKIP). It walks every day of every
-period and applies each BY* part as a plain predicate, then BYSETPOS,
-DTSTART, COUNT and UNTIL. It uses its own calendar arithmetic, with week 1
+period and applies each BY* part as a plain predicate, then BYSETPOS. It
+collects the candidates of all periods, sorts them, and only then applies
+DTSTART, UNTIL, COUNT and the query. It uses its own calendar arithmetic, with week 1
 defined as the week containing January 4. It covers DAILY to YEARLY rules
-with every BY* part, BYSETPOS, SKIP and invalid values. Result: **7,408 of
-7,408** in-scope corpus cases agree.
+with every BY* part, BYSETPOS, SKIP and invalid values. Result: **8,421 of
+8,421** in-scope corpus cases agree.
 
 **Secondary check: python-dateutil 4.0.0,** for the 1,004 sub-daily and
 leap-second cases outside the oracle's scope. Known differences are reported

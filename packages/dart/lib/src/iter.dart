@@ -31,7 +31,7 @@ import 'options.dart';
 /// frequency) without a single candidate, i.e. for rules that never match.
 Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int maxPeriods}) sync* {
   final freq = o.freq, bysetpos = o.bysetpos;
-  var count = o.count;
+  var count = o.count ?? -1; // -1: no COUNT
   if (count == 0 || o.interval == 0) return;
   if (notEmpty(bysetpos) && _setposNeverMatches(o)) return;
 
@@ -63,20 +63,71 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
   ii.rebuild(counter.year, counter.month);
   var timeset = _millis(_makeTimeset(ii, counter, o));
   final days = ii.days;
-  final skips = ii.skips;
-  var lastEmitted = -1 << 62, lastStart = -1 << 62;
+  // SKIP=FORWARD moves an invalid day of a MONTHLY period to the 1st of the
+  // next month, so a period can produce occurrences inside the next one, and
+  // after some of that period's own (BYSETPOS=-1 picking a moved 18:00 while
+  // the next period's BYSETPOS=1 picks 09:00 of the same day). Such rules
+  // buffer each period's results and only yield those before the next period
+  // starts, merged in order; exact duplicates are yielded once (RFC 8984
+  // section 4.3.3.1 removes dates already produced). One period of lookahead
+  // is enough.
+  final pending = ii.skips ? <int>[] : null;
+  int? lastEmitted;
+  var lastStart = -1 << 62;
+  var stop = false;
+  // Yields pending results < [below] in order; sets [stop] at UNTIL/COUNT.
+  Iterable<DateTime> drain(int? below) sync* {
+    var i = 0;
+    for (; i < pending!.length && (below == null || pending[i] < below); i++) {
+      final res = pending[i];
+      if (limitMs != null && res > limitMs) {
+        stop = true;
+        return;
+      }
+      if (res < dtstartMs || res == lastEmitted) continue;
+      lastEmitted = res;
+      yield DateTime.fromMillisecondsSinceEpoch(res, isUtc: true);
+      if (count > 0 && --count == 0) {
+        stop = true;
+        return;
+      }
+    }
+    pending.removeRange(0, i);
+  }
+
   for (var emptyPeriods = 0;;) {
-    if (emptyPeriods >= maxPeriods) return;
+    if (emptyPeriods >= maxPeriods) break;
     final start = counter.periodStartMs(freq);
-    if (limitMs != null && start > limitMs) return;
+    if (limitMs != null && start > limitMs) break;
     // Defensive: the counter must move forward (validated options ensure it).
-    if (start <= lastStart) return;
+    if (start <= lastStart) break;
     lastStart = start;
+    if (pending != null && pending.isNotEmpty) {
+      yield* drain(start);
+      if (stop) return;
+    }
 
     final n = ii.fillDayset(freq, counter.year, counter.month, counter.day);
     final filtered = ii.lastFiltered;
     final base = ii.yearordinal * _dayMs;
-    if (notEmpty(bysetpos)) {
+    if (pending != null) {
+      var produced = 0;
+      if (notEmpty(bysetpos)) {
+        final poslist = _buildPoslist(bysetpos!, timeset, days, n, base);
+        produced = poslist.length;
+        pending.addAll(poslist);
+      } else if (timeset.isNotEmpty) {
+        produced = n;
+        for (var j = 0; j < n; j++) {
+          final dayMs = base + days[j] * _dayMs;
+          for (final t in timeset) {
+            pending.add(dayMs + t);
+          }
+        }
+      }
+      emptyPeriods = produced == 0 ? emptyPeriods + 1 : 0;
+      pending.sort();
+    } else if (notEmpty(bysetpos)) {
       final poslist = _buildPoslist(bysetpos!, timeset, days, n, base);
       emptyPeriods = poslist.isEmpty ? emptyPeriods + 1 : 0;
       for (final res in poslist) {
@@ -84,13 +135,8 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
         // yielded, even when its period started before it.
         if (limitMs != null && res > limitMs) return;
         if (res >= dtstartMs) {
-          // SKIP: a date moved forward can repeat the next period's first day.
-          if (skips) {
-            if (res <= lastEmitted) continue;
-            lastEmitted = res;
-          }
           yield DateTime.fromMillisecondsSinceEpoch(res, isUtc: true);
-          if (count != null && --count == 0) return;
+          if (count > 0 && --count == 0) return;
         }
       }
     } else {
@@ -101,12 +147,8 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
           final res = dayMs + timeset[k];
           if (limitMs != null && res > limitMs) return;
           if (res >= dtstartMs) {
-            if (skips) {
-              if (res <= lastEmitted) continue;
-              lastEmitted = res;
-            }
             yield DateTime.fromMillisecondsSinceEpoch(res, isUtc: true);
-            if (count != null && --count == 0) return;
+            if (count > 0 && --count == 0) return;
           }
         }
       }
@@ -114,12 +156,13 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
 
     // Handle frequency and interval.
     counter.add(o, filtered);
-    if (counter.exhausted || counter.year > maxYear) return;
+    if (counter.exhausted || counter.year > maxYear) break;
     if (!o.isDailyOrGreater) {
       timeset = _millis(ii.gettimeset(freq, counter.hour, counter.minute, counter.second, 0));
     }
     ii.rebuild(counter.year, counter.month);
   }
+  if (pending != null) yield* drain(null);
 }
 
 const _dayMs = 86400000;

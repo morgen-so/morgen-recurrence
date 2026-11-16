@@ -54,9 +54,17 @@ export function iterSet<M extends QueryMethodTypes>(
     }
   }
 
+  // RDATE values are converted (each in its own time domain) and sorted as
+  // instants before they meet the query bounds: values in different domains
+  // can be in a different order as instants than as raw wall-clock fields,
+  // and accept() stops at the first value past a bound.
+  const rdateMs = new Array<number>(_rdate.length)
   for (let i = 0; i < _rdate.length; i++) {
-    const zonedDate = rezoneValue(_rdate[i], tzid)
-    if (!iterResult.accept(new Date(zonedDate.getTime()))) break
+    rdateMs[i] = rezoneValue(_rdate[i], tzid).getTime()
+  }
+  rdateMs.sort((a, b) => a - b)
+  for (let i = 0; i < rdateMs.length; i++) {
+    if (!iterResult.accept(new Date(rdateMs[i]))) break
   }
 
   _rrule.forEach(function (rrule) {

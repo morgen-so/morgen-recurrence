@@ -8,7 +8,7 @@
 // the "week containing January 4" definition (ISO 8601 with WKST).
 //
 // Scope: FREQ=DAILY/WEEKLY/MONTHLY/YEARLY. Returns undefined for anything
-// else (sub-daily frequencies, BYEASTER, SKIP combined with nth BYDAY).
+// else (sub-daily frequencies, BYEASTER).
 //
 // Documented choices where the RFCs leave room, matching the libraries:
 //  * BYDAY ordinals only count for MONTHLY and YEARLY (within the month when
@@ -145,7 +145,6 @@ export function oracle(c) {
   if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(r.freq)) return undefined;
   if (r.interval === 0 || r.count === 0) return c.query.method === 'all' || c.query.method === 'between' ? [] : null;
   const skip = r.skip === 'FORWARD' ? 1 : r.skip === 'BACKWARD' ? -1 : 0;
-  if (skip && r.byday?.some((b) => b.n)) return undefined;
 
   const st = parseStamp(c.dtstart);
   const z0 = daysFromCivil(st.y, st.mo, st.d);
@@ -202,15 +201,28 @@ export function oracle(c) {
   const limit = q.limit ?? Infinity;
   const maxKey = Math.min(r.until ?? Infinity, upper, key(daysFromCivil(Math.min(st.y + 300, 9999), 12, 31), 23, 59, 59, 999));
 
-  const out = [];
-  let count = 0;
-  let lastKey = -Infinity;
-  let prev = null; // for before()
+  // Every candidate of every period goes into one set; the occurrences are
+  // that set sorted, from DTSTART, up to UNTIL, truncated to COUNT. Nothing is
+  // emitted per period: with SKIP=FORWARD a period can produce dates inside
+  // the next one, earlier than some of its own.
+  const cand = new Set();
+  // Enough results are known once `need` candidates from DTSTART (and, for
+  // after(), past the query bound) lie before the start of the current
+  // period: no later period can produce anything earlier than its start.
+  const need = Math.min(r.count ?? Infinity, limit);
+  const enough = (before) => {
+    let n = 0;
+    for (const k of cand) {
+      if (k < startKey || k >= before || (r.until !== undefined && k > r.until)) continue;
+      if (q.method === 'after' && !(q.inc ? k >= lower : k > lower)) continue;
+      if (q.method === 'after' || ++n >= need) return true;
+    }
+    return false;
+  };
 
   // Periods.
   const weekStart = (z) => z - pymod(weekday(z) - r.wkst, 7);
-  let pi = 0;
-  for (;;) {
+  for (let pi = 0; ; pi++) {
     let days = [];
     let periodStart;
     if (r.freq === 'YEARLY') {
@@ -233,46 +245,31 @@ export function oracle(c) {
       periodStart = z0 + pi * r.interval;
       if (matches(periodStart)) days.push(periodStart);
     }
-    pi++;
     if (key(periodStart, 0, 0, 0, 0) > maxKey) break;
+    if ((need !== Infinity || q.method === 'after') && pi % 16 === 0 && enough(key(periodStart, 0, 0, 0, 0))) break;
 
     days = [...new Set(days)].sort((a, b) => a - b);
     let set = [];
     for (const z of days) for (const t of timeset) set.push(z * 86400000 + t);
     if (r.bysetpos) {
       const n = set.length;
-      set = [...new Set(r.bysetpos.map((p) => set[p > 0 ? p - 1 : n + p]).filter((x) => x !== undefined))].sort((a, b) => a - b);
+      set = r.bysetpos.map((p) => set[p > 0 ? p - 1 : n + p]).filter((x) => x !== undefined);
     }
-    for (const k of set) {
-      if (k < startKey) continue;
-      if (skip) {
-        if (k <= lastKey) continue;
-        lastKey = k;
-      }
-      if (r.until !== undefined && k > r.until) return finish();
-      count++;
-      if (q.method === 'all' || q.method === 'between') {
-        if (q.method === 'between' && (q.inc ? k > upper : k >= upper)) return finish();
-        if (q.method === 'all' || (q.inc ? k >= lower : k > lower)) {
-          if (out.length >= limit) return finish();
-          out.push(fromKey(k));
-        }
-      } else if (q.method === 'after') {
-        if (q.inc ? k >= lower : k > lower) return fromKey(k);
-      } else if (q.method === 'before') {
-        if (q.inc ? k > upper : k >= upper) return prev;
-        prev = fromKey(k);
-      }
-      if (r.count && count >= r.count) return finish();
-    }
+    for (const k of set) cand.add(k);
   }
-  return finish();
 
-  function finish() {
-    if (q.method === 'after') return null;
-    if (q.method === 'before') return prev;
-    return out;
+  let occ = [...cand].filter((k) => k >= startKey && (r.until === undefined || k <= r.until)).sort((a, b) => a - b);
+  if (r.count) occ = occ.slice(0, r.count);
+  if (q.method === 'after') {
+    const k = occ.find((k) => (q.inc ? k >= lower : k > lower));
+    return k === undefined ? null : fromKey(k);
   }
+  if (q.method === 'before') {
+    const ks = occ.filter((k) => (q.inc ? k <= upper : k < upper));
+    return ks.length ? fromKey(ks[ks.length - 1]) : null;
+  }
+  if (q.method === 'between') occ = occ.filter((k) => (q.inc ? k >= lower && k <= upper : k > lower && k < upper));
+  return occ.slice(0, limit).map(fromKey);
 
   // RFC 7529 / RFC 8984 SKIP: BYMONTHDAY values past the end of month m.
   function addSkipped(days, y, m) {
@@ -281,6 +278,8 @@ export function oracle(c) {
     const ml = monthLen(y, m);
     if (!r.bymonthday.some((v) => v > ml)) return;
     const z = skip < 0 ? daysFromCivil(y, m, ml) : daysFromCivil(y, m, ml) + 1;
-    if (!r.byday || r.byday.some((b) => b.wd === weekday(z))) days.push(z);
+    // BYDAY applies to the moved date as a date of its own: nth weekdays count
+    // within its own month (or year), not the month it came from.
+    if (matches(z, { moved: true })) days.push(z);
   }
 }

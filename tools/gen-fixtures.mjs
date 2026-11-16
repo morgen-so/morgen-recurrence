@@ -10,7 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { FIXTURES, loadTs, evaluate } from './lib/common.mjs';
-import { randomCases, weeknoCases, subdailyCases, skipCases, historicalCases } from './lib/random.mjs';
+import { randomCases, weeknoCases, subdailyCases, skipCases, skipOverlapCases, historicalCases } from './lib/random.mjs';
 import { jscalToRRule } from './lib/jscal.mjs';
 import { rrulejsSuiteCases } from './lib/rrulejs-suite.mjs';
 import { RFC5545, REGRESSIONS, JSCALENDAR } from './lib/handwritten.mjs';
@@ -103,6 +103,11 @@ write(
   'skip',
   'Random MONTHLY/YEARLY rules with RSCALE=GREGORIAN;SKIP=FORWARD/BACKWARD (RFC 7529, JSCalendar skip) (seed 31).',
   fill([...skipCases(1200, 31)], 'skip'),
+);
+write(
+  'skip-overlap',
+  'SKIP with several hours, BYSETPOS and nth BYDAY: moved dates landing in the next period, before some of its results, and tested against the ordinals of their new month (seed 51).',
+  fill([...skipOverlapCases(1000, 51)], 'skip-overlap'),
 );
 write(
   'historical',

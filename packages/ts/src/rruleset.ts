@@ -1,10 +1,11 @@
 import { RRule } from './rrule'
 import { sort, timeToUntilString, isValidDate } from './dateutil'
-import { copyWithZone, rezoneValue } from './timezone'
+import { copyWithZone, getValueZone, isUTC, rezoneValue, UTC_INSTANT } from './timezone'
 import { includes } from './helpers'
 import IterResult from './iterresult'
 import { iterSet } from './iterset'
 import { QueryMethodTypes, IterResultType } from './types'
+import { iter } from './iter'
 import { rrulestr } from './rrulestr'
 import { optionsToString } from './optionstostring'
 
@@ -165,13 +166,8 @@ export class RRuleSet extends RRule {
       )
     })
 
-    if (this._rdate.length) {
-      result.push(rdatesToString('RDATE', this._rdate, this.tzid()))
-    }
-
-    if (this._exdate.length) {
-      result.push(rdatesToString('EXDATE', this._exdate, this.tzid()))
-    }
+    result.push(...rdatesToString('RDATE', this._rdate, this.tzid()))
+    result.push(...rdatesToString('EXDATE', this._exdate, this.tzid()))
 
     return result
   }
@@ -229,8 +225,15 @@ export class RRuleSet extends RRule {
    * Morgen fix: calls `iterator` on the set's dates in chronological order.
    * rrule.js ran it on each RRULE (and the RDATEs) separately, in insertion
    * order, so a callback limit kept the first rule's dates instead of the
-   * earliest ones. The set is expanded window by window (doubling the
-   * window), so unbounded rules are never expanded eagerly.
+   * earliest ones.
+   *
+   * Expansion is bounded by demand, not by time: each RRULE, EXRULE and the
+   * RDATEs are streams merged lazily. A rule stream is refilled in batches
+   * that stop after a number of results (doubling at each refill), resuming
+   * after the last instant fetched, so a callback that stops after a few
+   * dates never materializes more than a few dates of any rule, however
+   * dense (a SECONDLY rule after a year-old RDATE), and each rule is
+   * restarted from its DTSTART only O(log n) times for n results.
    */
   private _chronological(
     method: 'all' | 'between',
@@ -238,48 +241,127 @@ export class RRuleSet extends RRule {
     iterator: (d: Date, len: number) => boolean
   ): Date[] {
     const result: Date[] = []
-    const upper = method === 'between' ? args.before.getTime() : Infinity
-    let from: number
-    let inclusive: boolean
+    let lo = -Infinity
+    let hi = Infinity
     if (method === 'between') {
-      from = args.after.getTime()
-      inclusive = !!args.inc
-    } else {
-      // Earliest possible date: the earliest DTSTART or RDATE, widened by
-      // the largest offset a time zone adapter can apply.
-      const starts = this._rrule.map((r) => r.options.dtstart.getTime())
-      this._rdate.forEach((d) => starts.push(rezoneValue(d, this.tzid()).getTime()))
-      if (!starts.length) return result
-      from = Math.min(...starts) - 2 * 86400000
-      inclusive = true
+      lo = args.inc ? args.after.getTime() : args.after.getTime() + 1
+      hi = args.inc ? args.before.getTime() : args.before.getTime() - 1
+      if (hi < lo) return result
     }
-    if (method === 'between' && upper < from) return result
+    const tzid = this.tzid()
 
-    // Start with one hour and double: a callback that stops early never
-    // expands much more than it consumes, even for SECONDLY rules.
-    for (let span = 3600000; ; span *= 2) {
-      const to = Math.min(from + span, upper)
-      const lowerInc = inclusive
-      const upperInc = to === upper ? method === 'all' || !!args.inc : true
-      const chunk = this._iter(
-        new IterResult('between', {
-          after: new Date(lowerInc ? from : from + 1),
-          before: new Date(upperInc ? to : to - 1),
-          inc: true,
-        })
-      ) as Date[]
-      for (const date of chunk) {
-        if (!iterator(date, result.length)) return result
-        result.push(date)
+    const rdates = this._rdate
+      .map((d) => rezoneValue(d, tzid).getTime())
+      .filter((t) => t >= lo && t <= hi)
+      .sort((a, b) => a - b)
+    const sources: Stream[] = this._rrule.map((r) => new RuleStream(r, lo, hi))
+    if (rdates.length) sources.push(new ArrayStream(rdates))
+    const exdates = new Set(this._exdate.map((d) => rezoneValue(d, tzid).getTime()))
+    const exrules = this._exrule.map((r) => new RuleStream(r, lo, hi))
+
+    let last = NaN
+    for (;;) {
+      let best: Stream | null = null
+      let bestT = Infinity
+      for (let i = 0; i < sources.length; i++) {
+        const t = sources[i].peek()
+        if (t < bestT) {
+          bestT = t
+          best = sources[i]
+        }
       }
-      if (to >= upper) return result
-      // Stop once nothing is left after this window.
-      if (this._iter(new IterResult('after', { dt: new Date(to), inc: false })) === null) {
-        return result
+      if (best === null) return result
+      best.next()
+      if (bestT === last) continue
+      last = bestT
+      if (exdates.has(bestT)) continue
+      let excluded = false
+      for (let i = 0; i < exrules.length && !excluded; i++) {
+        const ex = exrules[i]
+        while (ex.peek() < bestT) ex.next()
+        excluded = ex.peek() === bestT
       }
-      from = to
-      inclusive = false
+      if (excluded) continue
+      const date = new Date(bestT)
+      if (!iterator(date, result.length)) return result
+      result.push(date)
     }
+  }
+}
+
+/** Ascending epoch-ms source; peek() is Infinity once exhausted. */
+interface Stream {
+  peek(): number
+  next(): void
+}
+
+class ArrayStream implements Stream {
+  private i = 0
+  constructor(private readonly values: number[]) {}
+  peek() {
+    return this.i < this.values.length ? this.values[this.i] : Infinity
+  }
+  next() {
+    this.i++
+  }
+}
+
+/** Collects up to `budget` occurrences after `from` (exclusive) and <= `hi`. */
+class BatchResult extends IterResult<'between'> {
+  public readonly out: number[] = []
+  constructor(
+    private readonly from: number,
+    private readonly hi: number,
+    private readonly budget: number
+  ) {
+    // 'between' only so that iter() stops at the period after `hi`.
+    super('between', {
+      after: new Date(0),
+      before: new Date(Number.isFinite(hi) ? hi : 8.64e15),
+      inc: true,
+    })
+  }
+  accept(date: Date) {
+    const t = date.getTime()
+    if (t <= this.from) return true
+    if (t > this.hi) return false
+    this.out.push(t)
+    return this.out.length < this.budget
+  }
+}
+
+class RuleStream implements Stream {
+  private buf: number[] = []
+  private i = 0
+  private done = false
+  private budget = 8
+  private from: number
+
+  constructor(private readonly rule: RRule, lo: number, private readonly hi: number) {
+    this.from = lo - 1
+  }
+
+  peek() {
+    if (this.i >= this.buf.length) {
+      if (this.done) return Infinity
+      this.refill()
+      if (this.i >= this.buf.length) return Infinity
+    }
+    return this.buf[this.i]
+  }
+
+  next() {
+    this.i++
+  }
+
+  private refill() {
+    const batch = new BatchResult(this.from, this.hi, this.budget)
+    iter(batch, this.rule.options, this.rule.maxPeriods)
+    this.buf = batch.out
+    this.i = 0
+    if (batch.out.length < this.budget) this.done = true
+    else this.from = batch.out[batch.out.length - 1]
+    this.budget *= 2
   }
 }
 
@@ -293,27 +375,57 @@ function _addRule(rrule: RRule, collection: RRule[]) {
   }
 }
 
+/**
+ * Morgen fix: a value is a duplicate only if both its raw fields and its
+ * time domain (see timezone.ts) are equal. rrule.js compared raw
+ * milliseconds, so `RDATE:20240101T090000Z` and
+ * `RDATE;TZID=Europe/Zurich:20240101T090000` (different instants) collapsed
+ * into one. Values that one adapter maps to the same instant are kept apart
+ * too, since another adapter may not; equal instants are emitted once.
+ */
 function _addDate(date: Date, collection: Date[]) {
   if (!(date instanceof Date)) {
     throw new TypeError(String(date) + ' is not Date instance')
   }
-  if (!includes(collection.map(Number), Number(date))) {
-    collection.push(date)
-    sort(collection)
+  const ms = date.getTime()
+  const zone = getValueZone(date)
+  for (let i = 0; i < collection.length; i++) {
+    if (collection[i].getTime() === ms && getValueZone(collection[i]) === zone) return
   }
+  collection.push(date)
+  sort(collection)
 }
 
+/**
+ * Morgen fix: one property line per time domain, so every value keeps its
+ * meaning when the text is parsed again. rrule.js wrote every value with the
+ * set's TZID, so `EXDATE:20240102T080000Z` in a Europe/Zurich set came back
+ * as `EXDATE;TZID=Europe/Zurich:20240102T080000`, a different instant.
+ */
 function rdatesToString(
   param: string,
   rdates: Date[],
   tzid: string | undefined
-) {
-  const isUTC = !tzid || tzid.toUpperCase() === 'UTC'
-  const header = isUTC ? `${param}:` : `${param};TZID=${tzid}:`
-
-  const dateString = rdates
-    .map((rdate) => timeToUntilString(rdate.valueOf(), isUTC))
-    .join(',')
-
-  return `${header}${dateString}`
+): string[] {
+  const groups = new Map<string, string[]>()
+  for (const rdate of rdates) {
+    const zone = getValueZone(rdate)
+    let header: string
+    let utc: boolean
+    if (zone === UTC_INSTANT) {
+      header = `${param}:`
+      utc = true
+    } else {
+      // Own TZID, or the set's for values that follow it.
+      const z = zone ?? tzid
+      utc = zone === undefined && isUTC(z)
+      header = utc ? `${param}:` : `${param};TZID=${z}:`
+    }
+    // A header without TZID always holds UTC values.
+    if (!groups.has(header)) groups.set(header, [])
+    groups.get(header).push(timeToUntilString(rdate.getTime(), utc))
+  }
+  const lines: string[] = []
+  groups.forEach((values, header) => lines.push(header + values.join(',')))
+  return lines
 }

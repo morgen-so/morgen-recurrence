@@ -268,6 +268,13 @@ export default class Iterinfo {
     const days = this.days
     const first = freq === Frequency.MONTHLY ? month : 1
     const last = freq === Frequency.MONTHLY ? month : 12
+    // A date moved FORWARD lands in the next month. Where nth weekdays count
+    // within a month (MONTHLY, YEARLY with BYMONTH), it is checked against
+    // that month's, not the source month's (RFC 7529 section 4.1: BYDAY
+    // applies to the adjusted date). YEARLY nth weekdays count within the
+    // year, which the move never leaves (December has 31 days).
+    const crossMonth =
+      this.skipMode > 0 && (freq === Frequency.MONTHLY || this.bymonthT !== null)
     let added = false
     for (let m = first; m <= last; m++) {
       if (this.bymonthT !== null && this.bymonthT[m] !== 1) continue
@@ -281,7 +288,7 @@ export default class Iterinfo {
       }
       if (!overflows) continue
       const idx = this.skipMode < 0 ? end - 1 : end
-      if (!this.matchesByday(idx)) continue
+      if (!this.matchesByday(idx, crossMonth)) continue
       let dup = false
       for (let j = 0; j < n; j++) {
         if (days[j] === idx) dup = true
@@ -295,16 +302,35 @@ export default class Iterinfo {
     return n
   }
 
-  /** BYDAY (plain or nth) and BYEASTER checks of one day. */
-  private matchesByday(d: number) {
+  /**
+   * BYDAY (plain or nth) and BYEASTER checks of one day. With `ownMonth`, nth
+   * weekdays count within the day's own month rather than the period's mask.
+   */
+  private matchesByday(d: number, ownMonth: boolean) {
     if (this.hasEaster) return false
     const byweekdayT = this.byweekdayT
-    const nwdaymask = this.hasNth && this.monthinfo ? this.monthinfo.nwdaymask : null
-    if (byweekdayT === null && nwdaymask === null) return true
-    return (
-      (byweekdayT !== null && byweekdayT[this.yearinfo.wdaymask[d]] === 1) ||
-      (nwdaymask !== null && nwdaymask[d] === 1)
-    )
+    if (byweekdayT === null && !this.hasNth) return true
+    if (byweekdayT !== null && byweekdayT[this.yearinfo.wdaymask[d]] === 1) return true
+    if (!this.hasNth) return false
+    if (!ownMonth) return this.monthinfo ? this.monthinfo.nwdaymask[d] === 1 : false
+    const { mmask, mrange, wdaymask } = this.yearinfo
+    const m = mmask[d]
+    const first = mrange[m - 1]
+    const last = mrange[m] - 1
+    const nth = this.options.bynweekday
+    for (let k = 0; k < nth.length; k++) {
+      const [wday, n] = nth[k]
+      let i: number
+      if (n < 0) {
+        i = last + (n + 1) * 7
+        i -= pymod(wdaymask[i] - wday, 7)
+      } else {
+        i = first + (n - 1) * 7
+        i += pymod(7 - wdaymask[i] + wday, 7)
+      }
+      if (i === d) return true
+    }
+    return false
   }
 
   isFiltered(d: number): boolean {

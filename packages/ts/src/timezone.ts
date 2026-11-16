@@ -79,6 +79,15 @@ export function setValueZone(date: Date, zone: string) {
   return date
 }
 
+/**
+ * Recorded time domain of an RDATE/EXDATE value: UTC_INSTANT, its own TZID,
+ * or undefined for a value that follows the set's TZID (floating values and
+ * programmatic rdate()/exdate()).
+ */
+export function getValueZone(date: Date): string | undefined {
+  return valueZones.get(date)
+}
+
 /** Copy of `date` keeping its recorded time domain. */
 export function copyWithZone(date: Date) {
   const copy = new Date(date.getTime())

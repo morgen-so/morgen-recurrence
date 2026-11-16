@@ -165,6 +165,61 @@ export function* skipCases(count, seed) {
   }
 }
 
+/**
+ * SKIP combined with what can make a moved date interact with other
+ * candidates: several BYHOUR values, BYSETPOS (positive and negative), and
+ * nth BYDAY (pure or mixed with plain weekdays), so that a period's moved date
+ * lands inside the next period, possibly before some of that period's
+ * results, and is tested against the ordinals of the month it moved to.
+ * Queried with all/after/before/between.
+ */
+export function* skipOverlapCases(count, seed) {
+  const { int, pick, chance, sample } = prng(seed);
+  for (let i = 0; i < count; i++) {
+    const y = int(2000, 2030), m = int(1, 12);
+    const d = Math.min(pick([1, 28, 29, 30, 31]), new Date(Date.UTC(y, m, 0)).getUTCDate());
+    const start = `${y}-${pad(m)}-${pad(d)}T${pad(pick([0, 9, 12]))}:00:00`;
+    const frequency = pick(['monthly', 'monthly', 'monthly', 'yearly']);
+    const rule = { frequency, skip: pick(['forward', 'forward', 'backward']) };
+    const features = [frequency, `skip-${rule.skip}`];
+    rule.byMonthDay = sample([1, 2, 28, 29, 30, 31, -1], int(1, 3));
+    if (!rule.byMonthDay.some((v) => v >= 29)) rule.byMonthDay.push(pick([29, 30, 31]));
+    if (frequency === 'yearly' && chance(0.6)) { rule.byMonth = sample(['1', '2', '3', '4', '6', '9', '11'], int(1, 3)); features.push('byMonth'); }
+    if (chance(0.3)) { rule.interval = 2; features.push('interval'); }
+    if (chance(0.7)) {
+      rule.byHour = sample([0, 9, 12, 18, 23], int(2, 3));
+      features.push('byHour');
+    }
+    if (chance(0.6)) {
+      rule.bySetPosition = sample([1, 2, 3, -1, -2, -3], int(1, 3));
+      features.push('bySetPosition');
+    }
+    if (chance(0.6)) {
+      rule.byDay = sample(DAYS, int(1, 4)).map((day) => {
+        const nd = { '@type': 'NDay', day };
+        if (chance(0.6)) nd.nthOfPeriod = pick([1, 2, -1, -2, 5]);
+        return nd;
+      });
+      const nth = rule.byDay.filter((x) => x.nthOfPeriod).length;
+      features.push(nth === 0 ? 'byDay' : nth === rule.byDay.length ? 'byDayNth' : 'byDayMixed');
+    }
+    if (chance(0.5)) rule.count = int(1, 30);
+    else rule.until = fmt(new Date(Date.parse(`${start}Z`) + int(60, 1500) * 86400000));
+    const at = fmt(new Date(Date.parse(`${start}Z`) + int(0, 900) * 86400000 + pick([0, 9, 12, 18]) * 3600000));
+    const query = pick([
+      { method: 'all' },
+      betweenQuery(start, 3),
+      { method: 'between', after: at, before: fmt(new Date(Date.parse(`${at}Z`) + int(1, 60) * 86400000)), inc: chance(0.5) },
+      { method: 'after', dt: at, inc: chance(0.5) },
+      { method: 'before', dt: at, inc: chance(0.5) },
+    ]);
+    features.push(`query-${query.method}`);
+    const c = finish(start, rule, features, query);
+    c.rrule += `;RSCALE=GREGORIAN;SKIP=${rule.skip.toUpperCase()}`;
+    yield c;
+  }
+}
+
 /** Dates before 1970 (with milliseconds) and in years 1-999. */
 export function* historicalCases(count, seed) {
   const { int, pick, chance, sample } = prng(seed);

@@ -78,3 +78,8 @@ measured on an idle machine:
 
 The new BYWEEKNO mask, built from the definition, walks week by week, so it
 costs about the same as the old, incorrect one.
+
+After the recheck fixes (SKIP across periods, lazy set callbacks), timings
+are unchanged within noise: TS weekly MO,WE,FR 1,000 expansions 121 ms,
+daily 258 ms; Dart weekly 170 ms, daily 350 ms. Only SKIP=FORWARD rules use
+the new one-period buffer; other rules keep the unbuffered loop.

@@ -126,6 +126,39 @@ export const REGRESSIONS = [
     expected: ['2024-01-30T09:00:00', '2024-01-31T09:00:00', '2024-02-01T09:00:00', '2024-03-01T09:00:00', '2024-03-30T09:00:00', '2024-03-31T09:00:00', '2024-04-01T09:00:00', '2024-04-30T09:00:00'] },
   { bug: 'skip', note: 'February 29 in non-leap years -> March 1', dtstart: '2024-02-29T09:00:00', rrule: 'FREQ=YEARLY;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=3', query: all(),
     expected: ['2024-02-29T09:00:00', '2025-03-01T09:00:00', '2026-03-01T09:00:00'] },
+  // Recheck F01: SKIP=FORWARD moves Feb 31 into March, inside the next
+  // period. Feb set: Feb 1 09/18, Mar 1 09/18 (moved) -> BYSETPOS 1,-1 = Feb 1
+  // 09:00, Mar 1 18:00. March set: Mar 1 09/18, Mar 31 09/18 -> Mar 1 09:00,
+  // Mar 31 18:00. Mar 1 09:00 is distinct and earlier than February's last.
+  { bug: 'skip-overlap', note: 'merged in order; the earlier Mar 1 09:00 from March is not a duplicate', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20240401T000000', query: all(),
+    expected: ['2024-02-01T09:00:00', '2024-03-01T09:00:00', '2024-03-01T18:00:00', '2024-03-31T18:00:00'] },
+  { bug: 'skip-overlap', note: 'after() sees March 1 09:00 before February\'s moved 18:00', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20240401T000000', query: { method: 'after', dt: '2024-02-01T09:00:00', inc: false },
+    expected: '2024-03-01T09:00:00' },
+  { bug: 'skip-overlap', note: 'before() just before the moved 18:00', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20240401T000000', query: { method: 'before', dt: '2024-03-01T18:00:00', inc: false },
+    expected: '2024-03-01T09:00:00' },
+  { bug: 'skip-overlap', note: 'between() inside the overlap', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20240401T000000', query: between('2024-03-01T00:00:00', '2024-03-01T12:00:00'),
+    expected: ['2024-03-01T09:00:00'] },
+  { bug: 'skip-overlap', note: 'UNTIL inside the overlap keeps March 1 09:00', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20240301T120000', query: all(),
+    expected: ['2024-02-01T09:00:00', '2024-03-01T09:00:00'] },
+  { bug: 'skip-overlap', note: 'COUNT counts in chronological order', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=3', query: all(),
+    expected: ['2024-02-01T09:00:00', '2024-03-01T09:00:00', '2024-03-01T18:00:00'] },
+  { bug: 'skip-overlap', note: 'BYSETPOS 2,-2: Feb -> Feb 1 18:00, Mar 1 09:00 (moved); Mar -> Mar 1 18:00, Mar 31 09:00; Apr (Apr 31 -> May 1) -> Apr 1 18:00, May 1 09:00', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=2,-2;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20240402T000000', query: all(),
+    expected: ['2024-02-01T18:00:00', '2024-03-01T09:00:00', '2024-03-01T18:00:00', '2024-03-31T09:00:00', '2024-04-01T18:00:00'] },
+  { bug: 'skip-overlap', note: 'Feb picks Mar 1 (moved), March picks it again: emitted and counted once', dtstart: '2024-02-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=4', query: all(),
+    expected: ['2024-02-01T09:00:00', '2024-03-01T09:00:00', '2024-03-31T09:00:00', '2024-04-01T09:00:00'] },
+  // Recheck F06: a moved date is tested against the nth weekdays of the month
+  // it lands in. 2023: Jan 31 is a Tuesday; Apr 31 -> May 1, a Monday, the
+  // first (and -5th) Monday of May; April's first Monday is the 3rd.
+  { bug: 'skip-nth', note: 'Apr 31 -> May 1 = 1MO of May (TU matches Jan 31)', dtstart: '2023-01-31T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;BYDAY=1MO,TU;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20230502T000000', query: all(),
+    expected: ['2023-01-31T09:00:00', '2023-05-01T09:00:00'] },
+  { bug: 'skip-nth', note: 'negative ordinal: May 1, 2023 is -5MO of May; April has only four Mondays. No other 2023 match (July 31 is -1MO)', dtstart: '2023-04-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;BYDAY=-5MO;RSCALE=GREGORIAN;SKIP=FORWARD;UNTIL=20231231T235959', query: all(),
+    expected: ['2023-05-01T09:00:00'] },
+  { bug: 'skip-nth', note: 'YEARLY with BYMONTH: ordinals within the month moved to (May 1 is a Monday in 2023 and 2028)', dtstart: '2023-01-01T09:00:00', rrule: 'FREQ=YEARLY;BYMONTH=4;BYMONTHDAY=31;BYDAY=1MO;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=2', query: all(),
+    expected: ['2023-05-01T09:00:00', '2028-05-01T09:00:00'] },
+  { bug: 'skip-nth', note: 'BACKWARD stays in its month: Apr 31 -> Apr 30, 2023, the last Sunday of April', dtstart: '2023-04-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;BYDAY=-1SU;RSCALE=GREGORIAN;SKIP=BACKWARD;COUNT=1', query: all(),
+    expected: ['2023-04-30T09:00:00'] },
+  { bug: 'skip-nth', note: 'BYSETPOS after the move: April -> {May 1 (1MO)}, May -> {May 31 (WE)}', dtstart: '2023-04-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=30,31;BYDAY=1MO,WE;BYSETPOS=-1;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=2', query: all(),
+    expected: ['2023-05-01T09:00:00', '2023-05-31T09:00:00'] },
   // R12: years below 100 and milliseconds before 1970 (TS used Date.UTC,
   // which maps year 99 to 1999, and a negative % 1000).
   { bug: 'historical-dates', note: 'year 99: rrule.js gave 1999', dtstart: '0099-01-01T09:00:00', rrule: 'FREQ=DAILY;COUNT=2', query: all(),

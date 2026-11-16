@@ -55,7 +55,12 @@ export function parseInput(s: string, options: Partial<RRuleStrOptions>) {
 
       case 'RDATE':
         const [, rdateTzid] = /RDATE(?:;TZID=([^:=]+))?/i.exec(line) ?? []
-        if (rdateTzid && !tzid) {
+        // Morgen fix: rrule.js made an RDATE's TZID the TZID of the whole set
+        // whenever DTSTART had none, so with `DTSTART:...Z` (UTC) the RRULE
+        // dates were converted as that zone's wall-clock times. Each RDATE
+        // keeps its own zone (parseRDate), so the fallback only applies when
+        // there is no DTSTART at all.
+        if (rdateTzid && !tzid && !dtstart) {
           tzid = rdateTzid
         }
         rdatevals = rdatevals.concat(parseRDate(value, parms))

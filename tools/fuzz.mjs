@@ -9,7 +9,7 @@
 // reproduced.
 import fs from 'node:fs';
 import { loadTs, evaluate } from './lib/common.mjs';
-import { randomCases, weeknoCases, subdailyCases, skipCases, historicalCases } from './lib/random.mjs';
+import { randomCases, weeknoCases, subdailyCases, skipCases, skipOverlapCases, historicalCases } from './lib/random.mjs';
 import { jscalToRRule } from './lib/jscal.mjs';
 
 const [out, seedArg, countArg] = process.argv.slice(2);
@@ -25,7 +25,8 @@ const gens = [
   ['random', randomCases(Math.round(count * 0.6), seed)],
   ['weekno', weeknoCases(Math.round(count * 0.15), seed + 1)],
   ['subdaily', subdailyCases(Math.round(count * 0.1), seed + 2)],
-  ['skip', skipCases(Math.round(count * 0.1), seed + 3)],
+  ['skip', skipCases(Math.round(count * 0.07), seed + 3)],
+  ['skip-overlap', skipOverlapCases(Math.round(count * 0.03), seed + 5)],
   ['historical', historicalCases(Math.round(count * 0.05), seed + 4)],
 ];
 const cases = [];

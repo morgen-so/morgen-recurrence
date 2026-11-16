@@ -286,6 +286,12 @@ class IterInfo {
     final y = yearinfo;
     final first = freq == RRuleFrequency.monthly ? month : 1;
     final last = freq == RRuleFrequency.monthly ? month : 12;
+    // A date moved FORWARD lands in the next month. Where nth weekdays count
+    // within a month (MONTHLY, YEARLY with BYMONTH), it is checked against
+    // that month's, not the source month's (RFC 7529 section 4.1: BYDAY
+    // applies to the adjusted date). YEARLY nth weekdays count within the
+    // year, which the move never leaves (December has 31 days).
+    final crossMonth = _skipMode > 0 && (freq == RRuleFrequency.monthly || _bymonth != null);
     var added = false;
     for (var m = first; m <= last; m++) {
       final bymonth = _bymonth;
@@ -293,7 +299,7 @@ class IterInfo {
       final start = y.mrange[m - 1], end = y.mrange[m];
       if (!options.bymonthday.any((v) => v > end - start)) continue;
       final idx = _skipMode < 0 ? end - 1 : end;
-      if (!_matchesByday(idx)) continue;
+      if (!_matchesByday(idx, crossMonth)) continue;
       var dup = false;
       for (var j = 0; j < n; j++) {
         if (days[j] == idx) dup = true;
@@ -310,13 +316,32 @@ class IterInfo {
     return n;
   }
 
-  /// BYDAY (plain or nth) check of one day.
-  bool _matchesByday(int d) {
+  /// BYDAY (plain or nth) check of one day. With [ownMonth], nth weekdays
+  /// count within the day's own month rather than the period's mask.
+  bool _matchesByday(int d, bool ownMonth) {
     final byweekday = _byweekday;
-    final nw = _hasNth ? monthinfo?.nwdaymask : null;
-    if (byweekday == null && nw == null) return true;
-    return (byweekday != null && byweekday[yearinfo.wdaymask[d]] == 1) ||
-        (nw != null && d < nw.length && nw[d] == 1);
+    if (byweekday == null && !_hasNth) return true;
+    if (byweekday != null && byweekday[yearinfo.wdaymask[d]] == 1) return true;
+    if (!_hasNth) return false;
+    if (!ownMonth) {
+      final nw = monthinfo?.nwdaymask;
+      return nw != null && d < nw.length && nw[d] == 1;
+    }
+    final y = yearinfo;
+    final m = y.mmask[d];
+    final first = y.mrange[m - 1], last = y.mrange[m] - 1;
+    for (final (wday, n) in options.bynweekday!) {
+      int i;
+      if (n < 0) {
+        i = last + (n + 1) * 7;
+        i -= pymod(y.wdaymask[i] - wday, 7);
+      } else {
+        i = first + (n - 1) * 7;
+        i += pymod(7 - y.wdaymask[i] + wday, 7);
+      }
+      if (i == d) return true;
+    }
+    return false;
   }
 
   bool isFiltered(int d) {

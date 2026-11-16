@@ -437,4 +437,81 @@ void main() {
           ['2024-01-01T09:00:00']);
     });
   });
+  // Recheck F01: SKIP=FORWARD moves Feb 31 into March, inside the next period.
+  // February: Feb 1 09/18, Mar 1 09/18 (moved) -> BYSETPOS 1,-1 = Feb 1 09:00,
+  // Mar 1 18:00. March: Mar 1 09/18, Mar 31 09/18 -> Mar 1 09:00, Mar 31
+  // 18:00. Hand-checked; the same cases are in fixtures/regressions.json.
+  group('SKIP across periods (recheck F01)', () {
+    const spec = 'FREQ=MONTHLY;BYMONTHDAY=1,31;BYHOUR=9,18;BYSETPOS=1,-1;'
+        'RSCALE=GREGORIAN;SKIP=FORWARD';
+    RRule rule(String rest) =>
+        RRule(RRuleOptions.parse('$spec;$rest', dtstart: _d('2024-02-01T09:00:00')));
+    final until = rule('UNTIL=20240401T000000Z');
+
+    test('all in chronological order', () {
+      expect(until.all().map(_fmt), [
+        '2024-02-01T09:00:00',
+        '2024-03-01T09:00:00',
+        '2024-03-01T18:00:00',
+        '2024-03-31T18:00:00',
+      ]);
+    });
+    test('after, before, between', () {
+      expect(_fmt(until.after(_d('2024-02-01T09:00:00'))!), '2024-03-01T09:00:00');
+      expect(_fmt(until.before(_d('2024-03-01T18:00:00'))!), '2024-03-01T09:00:00');
+      expect(
+          until
+              .between(_d('2024-03-01T00:00:00'), _d('2024-03-01T12:00:00'), inclusive: true)
+              .map(_fmt),
+          ['2024-03-01T09:00:00']);
+    });
+    test('iterate(before:) inside the overlap', () {
+      expect(until.iterate(before: _d('2024-03-01T12:00:00')).map(_fmt),
+          ['2024-02-01T09:00:00', '2024-03-01T09:00:00']);
+    });
+    test('UNTIL inside the overlap and COUNT', () {
+      expect(rule('UNTIL=20240301T120000Z').all().map(_fmt),
+          ['2024-02-01T09:00:00', '2024-03-01T09:00:00']);
+      expect(rule('COUNT=3').all().map(_fmt),
+          ['2024-02-01T09:00:00', '2024-03-01T09:00:00', '2024-03-01T18:00:00']);
+    });
+    test('a date selected by both periods is yielded once', () {
+      final r = RRule(RRuleOptions.parse(
+          'FREQ=MONTHLY;BYMONTHDAY=1,31;BYSETPOS=1,-1;RSCALE=GREGORIAN;SKIP=FORWARD;COUNT=4',
+          dtstart: _d('2024-02-01T09:00:00')));
+      expect(r.all().map(_fmt), [
+        '2024-02-01T09:00:00',
+        '2024-03-01T09:00:00',
+        '2024-03-31T09:00:00',
+        '2024-04-01T09:00:00',
+      ]);
+    });
+  });
+
+  // Recheck F06: a moved date is tested against the nth weekdays of the month
+  // it lands in. 2023: Jan 31 is a Tuesday, May 1 a Monday (first of May).
+  group('SKIP with nth BYDAY (recheck F06)', () {
+    test('Apr 31 -> May 1 matches 1MO of May', () {
+      final r = RRule(RRuleOptions.parse(
+          'FREQ=MONTHLY;BYMONTHDAY=31;BYDAY=1MO,TU;RSCALE=GREGORIAN;SKIP=FORWARD;'
+          'UNTIL=20230502T000000Z',
+          dtstart: _d('2023-01-31T09:00:00')));
+      expect(r.all().map(_fmt), ['2023-01-31T09:00:00', '2023-05-01T09:00:00']);
+    });
+    test('JSCalendar form', () {
+      expect(
+          _js({
+            '@type': 'RecurrenceRule',
+            'frequency': 'monthly',
+            'byMonthDay': [31],
+            'byDay': [
+              {'@type': 'NDay', 'day': 'mo', 'nthOfPeriod': 1},
+              {'@type': 'NDay', 'day': 'tu'},
+            ],
+            'skip': 'forward',
+            'until': '2023-05-02T00:00:00',
+          }, '2023-01-31T09:00:00'),
+          ['2023-01-31T09:00:00', '2023-05-01T09:00:00']);
+    });
+  });
 }

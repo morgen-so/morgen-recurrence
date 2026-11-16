@@ -92,33 +92,80 @@ export function iter<M extends QueryMethodTypes>(
   const hasSetpos = notEmpty(bysetpos)
   const days = ii.days
 
-  const skips = ii.skips
-  let lastEmitted = -Infinity
+  // SKIP=FORWARD moves an invalid day of a MONTHLY period to the 1st of the
+  // next month, so a period can produce occurrences inside the next one, and
+  // after some of that period's own (BYSETPOS=-1 picking a moved 18:00 while
+  // the next period's BYSETPOS=1 picks 09:00 of the same day). Such rules
+  // buffer each period's results and only emit those before the next period
+  // starts, merged in order; exact duplicates are emitted once (RFC 8984
+  // section 4.3.3.1 removes dates already produced). No result can be later
+  // than the start of the period after the next one, so one period of
+  // lookahead is enough.
+  const pending: number[] | null = ii.skips ? [] : null
+  let lastEmitted = NaN
+  // Emits pending results < below, in order. Returns true when iteration must
+  // stop (UNTIL, COUNT, or the query is satisfied).
+  const drain = (below: number): boolean => {
+    let i = 0
+    for (; i < pending.length && pending[i] < below; i++) {
+      const res = pending[i]
+      if (res > untilWallMs) return true
+      if (res < dtstartMs || res === lastEmitted) continue
+      lastEmitted = res
+      const out = emit(res, tzid, doRezone)
+      if (doRezone && out.getTime() > untilMs) return true
+      if (!iterResult.accept(out)) return true
+      if (count) {
+        --count
+        if (!count) return true
+      }
+    }
+    pending.splice(0, i)
+    return false
+  }
+  const finish = () => {
+    if (pending !== null) drain(Infinity)
+    return emitResult(iterResult)
+  }
+
   let lastStart = -Infinity
   for (let emptyPeriods = 0; ; ) {
-    if (emptyPeriods >= maxPeriods) return emitResult(iterResult)
+    if (emptyPeriods >= maxPeriods) return finish()
     const start = periodStart(counterDate, freq)
-    if (start > limitMs) return emitResult(iterResult)
+    if (start > limitMs) return finish()
     // Defensive: the counter must move forward (validated options ensure it).
-    if (start <= lastStart) return emitResult(iterResult)
+    if (start <= lastStart) return finish()
     lastStart = start
+    if (pending !== null && pending.length !== 0 && drain(start)) {
+      return emitResult(iterResult)
+    }
 
     const n = ii.fillDayset(freq, counterDate.year, counterDate.month, counterDate.day)
     const filtered = ii.lastFiltered
     const base = ii.yearordinal * ONE_DAY
 
-    if (hasSetpos) {
+    if (pending !== null) {
+      let produced = 0
+      if (hasSetpos) {
+        const poslist = buildPoslist(bysetpos, timeset, days, n, base)
+        produced = poslist.length
+        for (let j = 0; j < poslist.length; j++) pending.push(poslist[j])
+      } else if (timeset.length !== 0) {
+        produced = n
+        for (let j = 0; j < n; j++) {
+          const dayMs = base + days[j] * ONE_DAY
+          for (let k = 0; k < timeset.length; k++) pending.push(dayMs + timeset[k])
+        }
+      }
+      emptyPeriods = produced === 0 ? emptyPeriods + 1 : 0
+      pending.sort((a, b) => a - b)
+    } else if (hasSetpos) {
       const poslist = buildPoslist(bysetpos, timeset, days, n, base)
       emptyPeriods = poslist.length === 0 ? emptyPeriods + 1 : 0
       for (let j = 0; j < poslist.length; j++) {
         const res = poslist[j]
         if (res > untilWallMs) return emitResult(iterResult)
         if (res >= dtstartMs) {
-          // SKIP: a date moved forward can repeat the next period's first day.
-          if (skips) {
-            if (res <= lastEmitted) continue
-            lastEmitted = res
-          }
           const out = emit(res, tzid, doRezone)
           if (doRezone && out.getTime() > untilMs) return emitResult(iterResult)
           if (!iterResult.accept(out)) {
@@ -138,10 +185,6 @@ export function iter<M extends QueryMethodTypes>(
           const res = dayMs + timeset[k]
           if (res > untilWallMs) return emitResult(iterResult)
           if (res >= dtstartMs) {
-            if (skips) {
-              if (res <= lastEmitted) continue
-              lastEmitted = res
-            }
             const out = emit(res, tzid, doRezone)
             if (doRezone && out.getTime() > untilMs) return emitResult(iterResult)
             if (!iterResult.accept(out)) {
@@ -160,7 +203,7 @@ export function iter<M extends QueryMethodTypes>(
     counterDate.add(options, filtered)
 
     if (counterDate.exhausted || counterDate.year > MAXYEAR) {
-      return emitResult(iterResult)
+      return finish()
     }
 
     if (!freqIsDailyOrGreater(freq)) {
