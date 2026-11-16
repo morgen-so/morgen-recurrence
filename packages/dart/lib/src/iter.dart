@@ -12,7 +12,13 @@
 //    results are de-duplicated (rrule.js wraps negative ones to the first
 //    element and emits duplicates);
 //  * iteration stops as soon as a period starts after [stopAfter] or UNTIL,
-//    and after [maxPeriods] periods, instead of running to year 9999.
+//    after [maxPeriods] consecutive periods without candidates, and when a
+//    sub-daily BYHOUR/BYMINUTE/BYSECOND is unreachable, instead of running
+//    to year 9999 (or forever);
+//  * MINUTELY/SECONDLY counters advance like python-dateutil (rrule.js
+//    misaligned the INTERVAL grid when carrying into BYMINUTE/BYHOUR).
+import 'dart:typed_data';
+
 import 'dateutil.dart';
 import 'iterinfo.dart';
 import 'options.dart';
@@ -20,42 +26,56 @@ import 'options.dart';
 /// Lazily yields the occurrences of [o] in chronological order.
 ///
 /// [stopAfter] ends the iteration once no later period can produce an
-/// occurrence <= [stopAfter]. [maxPeriods] bounds the number of iterated
-/// periods (years, months, weeks, days… depending on the frequency).
+/// occurrence <= [stopAfter]. [maxPeriods] stops it after that many
+/// consecutive periods (years, months, weeks, days… depending on the
+/// frequency) without a single candidate, i.e. for rules that never match.
 Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int maxPeriods}) sync* {
-  final dtstart = o.dtstart, freq = o.freq, until = o.until, bysetpos = o.bysetpos;
+  final freq = o.freq, bysetpos = o.bysetpos;
   var count = o.count;
   if (count == 0 || o.interval == 0) return;
-
-  DateTime? limit = stopAfter;
-  if (until != null && (limit == null || until.isBefore(limit))) limit = until;
-
   if (notEmpty(bysetpos) && _setposNeverMatches(o)) return;
 
-  final counter = _Counter(dtstart);
+  // Candidates are handled as epoch milliseconds: one DateTime per emitted
+  // occurrence.
+  final dtstartMs = o.dtstart.millisecondsSinceEpoch;
+  final until = o.until;
+  final untilMs = until?.millisecondsSinceEpoch;
+  int? limitMs = stopAfter?.millisecondsSinceEpoch;
+  if (untilMs != null && (limitMs == null || untilMs < limitMs)) limitMs = untilMs;
+
+  final counter = _Counter(o.dtstart);
   final ii = IterInfo(o);
   ii.rebuild(counter.year, counter.month);
-  var timeset = _makeTimeset(ii, counter, o);
-  for (var periods = 0;; periods++) {
-    if (periods >= maxPeriods) return;
-    if (limit != null && counter.periodStart(freq).isAfter(limit)) return;
+  var timeset = _millis(_makeTimeset(ii, counter, o));
+  final days = ii.days;
+  for (var emptyPeriods = 0;;) {
+    if (emptyPeriods >= maxPeriods) return;
+    if (limitMs != null && counter.periodStartMs(freq) > limitMs) return;
 
-    final ds = ii.getdayset(freq, counter.year, counter.month, counter.day);
-    final filtered = _removeFilteredDays(ds, ii, o);
-    final Iterable<DateTime> candidates = notEmpty(bysetpos)
-        ? _buildPoslist(bysetpos!, timeset, ds, ii)
-        : [
-            for (final day in ds.days)
-              if (day != null)
-                for (final time in timeset) combine(fromOrdinal(ii.yearordinal + day), time),
-          ];
-    for (final res in candidates) {
-      if (until != null && res.isAfter(until)) return;
-      if (!res.isBefore(dtstart)) {
-        yield res;
-        if (count != null) {
-          --count;
-          if (count == 0) return;
+    final n = ii.fillDayset(freq, counter.year, counter.month, counter.day);
+    final filtered = ii.lastFiltered;
+    final base = ii.yearordinal * _dayMs;
+    if (notEmpty(bysetpos)) {
+      final poslist = _buildPoslist(bysetpos!, timeset, days, n, base);
+      emptyPeriods = poslist.isEmpty ? emptyPeriods + 1 : 0;
+      for (final res in poslist) {
+        if (untilMs != null && res > untilMs) return;
+        if (res >= dtstartMs) {
+          yield DateTime.fromMillisecondsSinceEpoch(res, isUtc: true);
+          if (count != null && --count == 0) return;
+        }
+      }
+    } else {
+      emptyPeriods = n == 0 || timeset.isEmpty ? emptyPeriods + 1 : 0;
+      for (var j = 0; j < n; j++) {
+        final dayMs = base + days[j] * _dayMs;
+        for (var k = 0; k < timeset.length; k++) {
+          final res = dayMs + timeset[k];
+          if (untilMs != null && res > untilMs) return;
+          if (res >= dtstartMs) {
+            yield DateTime.fromMillisecondsSinceEpoch(res, isUtc: true);
+            if (count != null && --count == 0) return;
+          }
         }
       }
     }
@@ -64,11 +84,17 @@ Iterable<DateTime> iterate(ParsedOptions o, {DateTime? stopAfter, required int m
     counter.add(o, filtered);
     if (counter.exhausted || counter.year > maxYear) return;
     if (!o.isDailyOrGreater) {
-      timeset = ii.gettimeset(freq, counter.hour, counter.minute, counter.second, 0);
+      timeset = _millis(ii.gettimeset(freq, counter.hour, counter.minute, counter.second, 0));
     }
     ii.rebuild(counter.year, counter.month);
   }
 }
+
+const _dayMs = 86400000;
+
+List<int> _millis(List<Time> timeset) => [
+      for (final t in timeset) ((t.hour * 60 + t.minute) * 60 + t.second) * 1000 + t.millisecond
+    ];
 
 /// True when every BYSETPOS position lies beyond the largest set a period can
 /// have (e.g. FREQ=DAILY;BYDAY=SA,MO;BYSETPOS=2): the rule has no occurrences.
@@ -90,41 +116,6 @@ bool _setposNeverMatches(ParsedOptions o) {
   return o.bysetpos!.every((p) => p.abs() > max);
 }
 
-bool _isFiltered(IterInfo ii, int currentDay, ParsedOptions o) {
-  final y = ii.yearinfo;
-  final bymonth = o.bymonth, byweekno = o.byweekno, byweekday = o.byweekday;
-  final byyearday = o.byyearday;
-  final nwdaymask = ii.nwdaymask;
-  return (notEmpty(bymonth) && !bymonth!.contains(y.mmask[currentDay])) ||
-      (notEmpty(byweekno) && y.wnomask![currentDay] == 0) ||
-      // RFC 5545: a day matches BYDAY if it matches a plain weekday OR an nth
-      // weekday. rrule.js (and python-dateutil) require both.
-      ((notEmpty(byweekday) || nwdaymask.isNotEmpty) &&
-          !(byweekday?.contains(y.wdaymask[currentDay]) ?? false) &&
-          !(currentDay < nwdaymask.length && nwdaymask[currentDay] == 1)) ||
-      ((o.bymonthday.isNotEmpty || o.bynmonthday.isNotEmpty) &&
-          !o.bymonthday.contains(y.mdaymask[currentDay]) &&
-          !o.bynmonthday.contains(y.nmdaymask[currentDay])) ||
-      (notEmpty(byyearday) &&
-          ((currentDay < ii.yearlen &&
-                  !byyearday!.contains(currentDay + 1) &&
-                  !byyearday.contains(-ii.yearlen + currentDay)) ||
-              (currentDay >= ii.yearlen &&
-                  !byyearday!.contains(currentDay + 1 - ii.yearlen) &&
-                  !byyearday.contains(-ii.nextyearlen + currentDay - ii.yearlen))));
-}
-
-/// Nulls out filtered days; returns whether the *last* day was filtered
-/// (only used to skip ahead in sub-daily frequencies, like rrule.js).
-bool _removeFilteredDays(DaySet ds, IterInfo ii, ParsedOptions o) {
-  var filtered = false;
-  for (var k = 0; k < ds.days.length; k++) {
-    filtered = _isFiltered(ii, ds.days[k]!, o);
-    if (filtered) ds.days[k] = null;
-  }
-  return filtered;
-}
-
 List<Time> _makeTimeset(IterInfo ii, _Counter c, ParsedOptions o) {
   if (o.isDailyOrGreater) return buildTimeset(o);
   final f = o.freq.index;
@@ -140,13 +131,13 @@ List<Time> _makeTimeset(IterInfo ii, _Counter c, ParsedOptions o) {
   return ii.gettimeset(o.freq, c.hour, c.minute, c.second, c.millisecond);
 }
 
-List<DateTime> _buildPoslist(List<int> bysetpos, List<Time> timeset, DaySet ds, IterInfo ii) {
-  if (timeset.isEmpty) return const [];
-  final days = [
-    for (final d in ds.days)
-      if (d != null) d
-  ];
-  final poslist = <DateTime>{};
+/// Applies BYSETPOS to one period: [days] holds the [n] filtered
+/// day-of-year indexes, [timeset] the times of day in ms, [base] the epoch ms
+/// of January 1st. Positions past either end of the set select nothing, and
+/// equal results are returned once (rrule.js wrapped and duplicated them).
+List<int> _buildPoslist(List<int> bysetpos, List<int> timeset, Int32List days, int n, int base) {
+  if (timeset.isEmpty || n == 0) return const [];
+  final poslist = <int>[];
   for (final pos in bysetpos) {
     final int daypos, timepos;
     if (pos < 0) {
@@ -156,11 +147,12 @@ List<DateTime> _buildPoslist(List<int> bysetpos, List<Time> timeset, DaySet ds, 
       daypos = floorDiv(pos - 1, timeset.length);
       timepos = pymod(pos - 1, timeset.length);
     }
-    final idx = daypos < 0 ? days.length + daypos : daypos;
-    if (idx < 0 || idx >= days.length) continue;
-    poslist.add(combine(fromOrdinal(ii.yearordinal + days[idx]), timeset[timepos]));
+    final idx = daypos < 0 ? n + daypos : daypos;
+    if (idx < 0 || idx >= n) continue;
+    final res = base + days[idx] * _dayMs + timeset[timepos];
+    if (!poslist.contains(res)) poslist.add(res);
   }
-  return poslist.toList()..sort();
+  return poslist..sort();
 }
 
 /// Mutable date-time counter (rrule.js `DateTime`), advanced by one period
@@ -183,15 +175,17 @@ class _Counter {
 
   int get weekday => pyWeekday(year, month, day);
 
-  /// Earliest instant an occurrence of the period starting here can have.
-  DateTime periodStart(RRuleFrequency freq) => switch (freq) {
+  /// Earliest instant (epoch ms) an occurrence of the period starting here
+  /// can have.
+  int periodStartMs(RRuleFrequency freq) => switch (freq) {
         RRuleFrequency.yearly => DateTime.utc(year),
         RRuleFrequency.monthly => DateTime.utc(year, month),
         RRuleFrequency.weekly || RRuleFrequency.daily => DateTime.utc(year, month, day),
         RRuleFrequency.hourly => DateTime.utc(year, month, day, hour),
         RRuleFrequency.minutely => DateTime.utc(year, month, day, hour, minute),
         RRuleFrequency.secondly => DateTime.utc(year, month, day, hour, minute, second),
-      };
+      }
+          .millisecondsSinceEpoch;
 
   void addYears(int years) => year += years;
 

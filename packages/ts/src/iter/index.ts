@@ -26,8 +26,11 @@ import { buildPoslist } from './poslist'
 import { Time, DateTime } from '../datetime'
 
 /**
- * Default safety net on the number of iterated periods (years for YEARLY,
- * days for DAILY, hours for HOURLY…). Same value as the Dart package.
+ * Default safety net: iteration stops after this many consecutive periods
+ * (years for YEARLY, days for DAILY, hours for HOURLY…) without a single
+ * candidate occurrence, i.e. for rules that never match. Periods that produce
+ * candidates (even before DTSTART or the query window) reset the count, so
+ * productive rules iterate as far as needed. Same value as the Dart package.
  */
 export const DEFAULT_MAX_PERIODS = 200000
 
@@ -70,8 +73,8 @@ export function iter<M extends QueryMethodTypes>(
   const hasSetpos = notEmpty(bysetpos)
   const days = ii.days
 
-  for (let periods = 0; ; periods++) {
-    if (periods >= maxPeriods) return emitResult(iterResult)
+  for (let emptyPeriods = 0; ; ) {
+    if (emptyPeriods >= maxPeriods) return emitResult(iterResult)
     if (limitMs !== Infinity && periodStart(counterDate, freq) > limitMs) {
       return emitResult(iterResult)
     }
@@ -82,6 +85,7 @@ export function iter<M extends QueryMethodTypes>(
 
     if (hasSetpos) {
       const poslist = buildPoslist(bysetpos, timeset, days, n, base)
+      emptyPeriods = poslist.length === 0 ? emptyPeriods + 1 : 0
       for (let j = 0; j < poslist.length; j++) {
         const res = poslist[j]
         if (res > untilMs) return emitResult(iterResult)
@@ -96,6 +100,7 @@ export function iter<M extends QueryMethodTypes>(
         }
       }
     } else {
+      emptyPeriods = n === 0 || timeset.length === 0 ? emptyPeriods + 1 : 0
       for (let j = 0; j < n; j++) {
         const dayMs = base + days[j] * ONE_DAY
         for (let k = 0; k < timeset.length; k++) {

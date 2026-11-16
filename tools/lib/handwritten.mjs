@@ -86,6 +86,18 @@ export const REGRESSIONS = [
     dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;BYMONTH=4,6', query: { method: 'before', dt: '2030-01-01T00:00:00', inc: false },
     expected: null,
   },
+  // The runaway safety net must not cut off productive rules: e.g. backend
+  // workflow schedules call after(now) on rules anchored long ago.
+  {
+    bug: 'period-cap', note: 'MINUTELY rule anchored 17 months earlier (~760k periods): after() must still find the next run',
+    dtstart: '2024-01-01T00:00:00', rrule: 'FREQ=MINUTELY;INTERVAL=30', query: { method: 'after', dt: '2025-06-01T00:10:00', inc: false },
+    expected: '2025-06-01T00:30:00',
+  },
+  {
+    bug: 'period-cap', note: 'HOURLY rule anchored 30 years earlier (~263k periods)',
+    dtstart: '1995-01-01T08:00:00', rrule: 'FREQ=HOURLY;INTERVAL=2', query: { method: 'between', after: '2025-01-01T00:00:00', before: '2025-01-01T05:00:00', inc: true },
+    expected: ['2025-01-01T00:00:00', '2025-01-01T02:00:00', '2025-01-01T04:00:00'],
+  },
 ];
 
 // RFC 5545 section 3.8.5.3. DTSTART is floating (the RFC uses

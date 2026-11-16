@@ -69,8 +69,9 @@ export class RRule implements QueryMethods {
   public origOptions: Partial<Options>
   public options: ParsedOptions
   /**
-   * Safety net on the number of periods iterated per query (years for
-   * YEARLY, days for DAILY…), on top of COUNT, UNTIL and the query bounds.
+   * Safety net for rules that never match: iteration stops after this many
+   * consecutive periods (years for YEARLY, days for DAILY…) without any
+   * candidate occurrence. See DEFAULT_MAX_PERIODS.
    */
   public maxPeriods: number = DEFAULT_MAX_PERIODS
 

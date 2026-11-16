@@ -37,7 +37,14 @@ export default class IterResult<M extends QueryMethodTypes> {
     } else if (method === 'after') {
       this.minDate = args.inc ? args.dt : new Date(args.dt.getTime() + 1)
     }
+    this.minMs = this.minDate ? this.minDate.getTime() : -Infinity
+    this.maxMs = this.maxDate ? this.maxDate.getTime() : Infinity
   }
+
+  // Bounds as numbers: comparing Date objects with < / > coerces them through
+  // valueOf on every candidate, which dominated expansion time.
+  private readonly minMs: number
+  private readonly maxMs: number
 
   /**
    * Possibly adds a date into the result.
@@ -49,8 +56,9 @@ export default class IterResult<M extends QueryMethodTypes> {
    */
   accept(date: Date) {
     ++this.total
-    const tooEarly = this.minDate && date < this.minDate
-    const tooLate = this.maxDate && date > this.maxDate
+    const t = date.getTime()
+    const tooEarly = t < this.minMs
+    const tooLate = t > this.maxMs
 
     if (this.method === 'between') {
       if (tooEarly) return true

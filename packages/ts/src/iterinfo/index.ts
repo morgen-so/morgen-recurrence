@@ -1,7 +1,7 @@
-import { notEmpty, isPresent } from '../helpers'
+import { notEmpty, isPresent, pymod } from '../helpers'
 import { ParsedOptions, Frequency } from '../types'
 import { YearInfo, rebuildYear } from './yearinfo'
-import { rebuildMonth, MonthInfo } from './monthinfo'
+import { MonthInfo } from './monthinfo'
 import { easter } from './easter'
 import { Time } from '../datetime'
 import { ONE_DAY, sort } from '../dateutil'
@@ -79,15 +79,7 @@ export default class Iterinfo {
       this.hasNth &&
       (month !== this.lastmonth || year !== this._lastyear)
     ) {
-      const { yearlen, mrange, wdaymask } = this.yearinfo
-      this.monthinfo = rebuildMonth(
-        year,
-        month,
-        yearlen,
-        mrange,
-        wdaymask,
-        options
-      )
+      this.rebuildNthMask(year, month)
     }
 
     if (isPresent(options.byeaster)) {
@@ -95,6 +87,57 @@ export default class Iterinfo {
     }
 
     this._lastyear = year
+  }
+
+  // nth-weekday mask (rrule.js monthinfo.ts rebuildMonth), kept in one
+  // reused buffer: only the indices set for the previous month are cleared.
+  private readonly nwBuf = new Uint8Array(366 + 7)
+  private nwSet: number[] = []
+
+  private rebuildNthMask(year: number, month: number) {
+    const options = this.options
+    const { yearlen, mrange, wdaymask } = this.yearinfo
+    const buf = this.nwBuf
+    for (let k = 0; k < this.nwSet.length; k++) buf[this.nwSet[k]] = 0
+    const set: number[] = []
+
+    // Weekly frequency never gets here (nth weekdays only count for MONTHLY
+    // and YEARLY), so cross-year periods do not matter.
+    const addRange = (first: number, last: number) => {
+      for (let k = 0; k < options.bynweekday.length; k++) {
+        const [wday, n] = options.bynweekday[k]
+        let i: number
+        if (n < 0) {
+          i = last + (n + 1) * 7
+          i -= pymod(wdaymask[i] - wday, 7)
+        } else {
+          i = first + (n - 1) * 7
+          i += pymod(7 - wdaymask[i] + wday, 7)
+        }
+        if (first <= i && i <= last) {
+          buf[i] = 1
+          set.push(i)
+        }
+      }
+    }
+    if (options.freq === Frequency.YEARLY) {
+      if (!notEmpty(options.bymonth)) {
+        addRange(0, yearlen - 1)
+      } else {
+        for (let j = 0; j < options.bymonth.length; j++) {
+          const m = options.bymonth[j]
+          addRange(mrange[m - 1], mrange[m] - 1)
+        }
+      }
+    } else if (options.freq === Frequency.MONTHLY) {
+      addRange(mrange[month - 1], mrange[month] - 1)
+    }
+    this.nwSet = set
+    this.monthinfo = {
+      lastyear: year,
+      lastmonth: month,
+      nwdaymask: buf as unknown as number[],
+    }
   }
 
   get lastyear() {

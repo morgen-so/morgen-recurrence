@@ -10,7 +10,8 @@
 //
 // Rules are evaluated on floating times: DateTime values with isUtc=true
 // holding wall-clock fields (like desktop, which converts to the event's time
-// zone afterwards). There is no TZID, RRuleSet, string parsing or caching.
+// zone afterwards). There is no TZID, RRuleSet or caching: time zones are
+// the caller's business.
 //
 // Differences from rrule.js, verified by test/rrule_diff_test.dart:
 //  * BYDAY mixing plain and nth weekdays (MONTHLY;BYDAY=2WE,SA) matches days
@@ -24,9 +25,18 @@
 //    occurrences come out in chronological order.
 //  * Iteration never runs away: it stops as soon as no later period can
 //    produce an occurrence before the requested bound (or UNTIL), after
-//    [RRule.maxPeriods] periods, and for unreachable sub-daily BYHOUR/BYMINUTE
-//    combinations. rrule.js iterates up to year 9999 (seconds) for rules that
-//    never match and loops forever on e.g. FREQ=HOURLY;INTERVAL=6;BYHOUR=3.
+//    [RRule.maxPeriods] consecutive periods without candidates, and for
+//    unreachable sub-daily BYHOUR/BYMINUTE combinations. rrule.js iterates up
+//    to year 9999 (seconds) for rules that never match and loops forever on
+//    e.g. FREQ=HOURLY;INTERVAL=6;BYHOUR=3. Rules whose BYSETPOS positions all
+//    exceed the largest possible set per period return nothing immediately.
+//  * MINUTELY/SECONDLY counters advance like python-dateutil: rrule.js
+//    misaligned the INTERVAL grid when carrying into BYMINUTE/BYHOUR
+//    (FREQ=SECONDLY;INTERVAL=7;BYMINUTE=10,15 gave 09:10:03, not 09:10:04),
+//    skipped days, or looped forever.
+//
+// Same behaviour as the TypeScript package @morgen-so/rrule: both run the
+// shared conformance fixtures of the morgen-recurrence repository.
 import 'iter.dart' as engine;
 import 'options.dart';
 
@@ -36,8 +46,9 @@ class RRule {
   final RRuleOptions options;
   final ParsedOptions _parsed;
 
-  /// Safety net on the number of iterated periods (years for YEARLY, days for
-  /// DAILY…), on top of the bounds given to [between] / [all].
+  /// Safety net for rules that never match: iteration stops after this many
+  /// consecutive periods (years for YEARLY, days for DAILY…) without any
+  /// candidate occurrence. Productive rules are not limited by it.
   final int maxPeriods;
 
   /// Throws [ArgumentError] for invalid options (BYSETPOS 0 or beyond ±366).
@@ -82,8 +93,8 @@ class RRule {
     return last;
   }
 
-  /// All occurrences, at most [limit]. Meant for COUNT/UNTIL-bounded rules;
-  /// unbounded rules stop after [maxPeriods] periods.
+  /// All occurrences, at most [limit]. Meant for COUNT/UNTIL-bounded rules:
+  /// without [limit], an unbounded rule iterates up to year 9999.
   List<DateTime> all({int? limit}) {
     final it = iterate();
     return (limit == null ? it : it.take(limit)).toList();

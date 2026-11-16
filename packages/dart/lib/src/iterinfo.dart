@@ -5,6 +5,8 @@
 // Based on python-dateutil: Copyright (c) 2003-2011 Gustavo Niemeyer,
 // Copyright (c) 2012 Tomi Pieviläinen. Distributed under the BSD 3-Clause
 // licence reproduced in full in the LICENCE file next to this file.
+import 'dart:typed_data';
+
 import 'dateutil.dart';
 import 'options.dart';
 
@@ -138,8 +140,11 @@ class MonthInfo {
   MonthInfo._(this.lastyear, this.lastmonth, this.nwdaymask);
 }
 
+/// [buffer] and [previouslySet] let callers reuse one mask across months:
+/// only the indexes set last time are cleared.
 MonthInfo rebuildMonth(
-    int year, int month, int yearlen, List<int> mrange, List<int> wdaymask, ParsedOptions options) {
+    int year, int month, int yearlen, List<int> mrange, List<int> wdaymask, ParsedOptions options,
+    {Uint8List? buffer, List<int>? previouslySet}) {
   var ranges = <(int, int)>[];
   if (options.freq == RRuleFrequency.yearly) {
     if (!notEmpty(options.bymonth)) {
@@ -157,7 +162,16 @@ MonthInfo rebuildMonth(
 
   // Weekly frequency won't get here, so we may not care about cross-year
   // weekly periods.
-  final nwdaymask = List.filled(yearlen, 0);
+  final List<int> nwdaymask;
+  if (buffer != null) {
+    for (final i in previouslySet!) {
+      buffer[i] = 0;
+    }
+    previouslySet.clear();
+    nwdaymask = buffer;
+  } else {
+    nwdaymask = List.filled(yearlen, 0);
+  }
   for (final (first, end) in ranges) {
     final last = end - 1;
     for (final (wday, n) in options.bynweekday!) {
@@ -172,18 +186,23 @@ MonthInfo rebuildMonth(
         if (i < 0 || i >= wdaymask.length) continue;
         i += pymod(7 - wdaymask[i] + wday, 7);
       }
-      if (first <= i && i <= last) nwdaymask[i] = 1;
+      if (first <= i && i <= last) {
+        nwdaymask[i] = 1;
+        previouslySet?.add(i);
+      }
     }
   }
   return MonthInfo._(year, month, nwdaymask);
 }
 
-/// Candidate days of one period: day-of-year indexes (relative to
-/// [IterInfo.yearordinal]) starting at [start]; filtered days are set to null.
-class DaySet {
-  final int start;
-  final List<int?> days;
-  DaySet(this.start, int end) : days = [for (var i = start; i < end; i++) i];
+Uint8List? _table(List<int>? values, int size, [int sign = 1]) {
+  if (values == null || values.isEmpty) return null;
+  final t = Uint8List(size);
+  for (final v in values) {
+    final x = v * sign;
+    if (x >= 0 && x < size) t[x] = 1;
+  }
+  return t;
 }
 
 class IterInfo {
@@ -192,7 +211,32 @@ class IterInfo {
   MonthInfo? monthinfo;
   int? _yearinfoYear;
 
-  IterInfo(this.options);
+  /// Day-of-year indexes of the current period that passed the filters
+  /// (see [fillDayset]); reused across periods.
+  final Int32List days = Int32List(366 + 7);
+
+  /// Whether the last day of the current period was filtered out (used to
+  /// skip ahead in sub-daily frequencies, like rrule.js).
+  bool lastFiltered = false;
+
+  // Reused nth-weekday mask (see rebuildMonth).
+  final Uint8List _nwBuf = Uint8List(366 + 7);
+  final List<int> _nwSet = [];
+
+  // Precomputed BY* membership tables.
+  final Uint8List? _bymonth, _byweekday, _bymonthday, _bynmonthday, _byyeardayPos, _byyeardayNeg;
+  final bool _hasNth, _hasMonthday, _hasWeekno;
+
+  IterInfo(this.options)
+      : _bymonth = _table(options.bymonth, 13),
+        _byweekday = _table(options.byweekday, 7),
+        _bymonthday = _table(options.bymonthday, 32),
+        _bynmonthday = _table(options.bynmonthday, 32, -1),
+        _byyeardayPos = _table(options.byyearday, 367),
+        _byyeardayNeg = _table(options.byyearday, 367, -1),
+        _hasNth = notEmpty(options.bynweekday),
+        _hasMonthday = options.bymonthday.isNotEmpty || options.bynmonthday.isNotEmpty,
+        _hasWeekno = notEmpty(options.byweekno);
 
   void rebuild(int year, int month) {
     // rrule.js rebuilds the year tables whenever `lastyear` (taken from the
@@ -202,10 +246,10 @@ class IterInfo {
       yearinfo = rebuildYear(year, options);
       _yearinfoYear = year;
     }
-    if (notEmpty(options.bynweekday) &&
-        (month != monthinfo?.lastmonth || year != monthinfo?.lastyear)) {
-      monthinfo =
-          rebuildMonth(year, month, yearinfo.yearlen, yearinfo.mrange, yearinfo.wdaymask, options);
+    if (_hasNth && (month != monthinfo?.lastmonth || year != monthinfo?.lastyear)) {
+      monthinfo = rebuildMonth(
+          year, month, yearinfo.yearlen, yearinfo.mrange, yearinfo.wdaymask, options,
+          buffer: _nwBuf, previouslySet: _nwSet);
     }
   }
 
@@ -214,25 +258,73 @@ class IterInfo {
   int get yearordinal => yearinfo.yearordinal;
   List<int> get nwdaymask => monthinfo?.nwdaymask ?? const [];
 
-  DaySet getdayset(RRuleFrequency freq, int year, int month, int day) {
+  /// Computes the candidate days of the period starting at (year, month,
+  /// day), keeps those passing the BY* filters in [days] and returns how many
+  /// there are.
+  int fillDayset(RRuleFrequency freq, int year, int month, int day) {
+    int start, end;
     switch (freq) {
       case RRuleFrequency.yearly:
-        return DaySet(0, yearlen);
+        start = 0;
+        end = yearlen;
       case RRuleFrequency.monthly:
-        return DaySet(yearinfo.mrange[month - 1], yearinfo.mrange[month]);
+        start = yearinfo.mrange[month - 1];
+        end = yearinfo.mrange[month];
       case RRuleFrequency.weekly:
         // We need to handle cross-year weeks here.
         var i = toOrdinal(year, month, day) - yearordinal;
-        final start = i;
+        start = i;
         for (var j = 0; j < 7; j++) {
           ++i;
           if (yearinfo.wdaymask[i] == options.wkst) break;
         }
-        return DaySet(start, i);
+        end = i;
       default:
-        final i = toOrdinal(year, month, day) - yearordinal;
-        return DaySet(i, i + 1);
+        start = toOrdinal(year, month, day) - yearordinal;
+        end = start + 1;
     }
+    var n = 0;
+    var filtered = false;
+    for (var d = start; d < end; d++) {
+      filtered = isFiltered(d);
+      if (!filtered) days[n++] = d;
+    }
+    lastFiltered = filtered;
+    return n;
+  }
+
+  bool isFiltered(int d) {
+    final y = yearinfo;
+    final bymonth = _bymonth;
+    if (bymonth != null && bymonth[y.mmask[d]] != 1) return true;
+    if (_hasWeekno && y.wnomask![d] == 0) return true;
+
+    // RFC 5545: a day matches BYDAY if it matches a plain weekday OR an nth
+    // weekday. rrule.js (and python-dateutil) require both.
+    final byweekday = _byweekday;
+    final nw = _hasNth ? monthinfo?.nwdaymask : null;
+    if ((byweekday != null || (nw != null && nw.isNotEmpty)) &&
+        !(byweekday != null && byweekday[y.wdaymask[d]] == 1) &&
+        !(nw != null && d < nw.length && nw[d] == 1)) {
+      return true;
+    }
+
+    if (_hasMonthday &&
+        !(_bymonthday != null && _bymonthday[y.mdaymask[d]] == 1) &&
+        !(_bynmonthday != null && _bynmonthday[-y.nmdaymask[d]] == 1)) {
+      return true;
+    }
+
+    final pos = _byyeardayPos, neg = _byyeardayNeg;
+    if (pos != null || neg != null) {
+      final yl = y.yearlen;
+      // Positive values v match day v - 1; negative ones yearlen + v.
+      final p = d < yl ? d + 1 : d + 1 - yl;
+      final q = d < yl ? yl - d : y.nextyearlen - (d - yl);
+      final hit = (pos != null && p < 367 && pos[p] == 1) || (neg != null && q < 367 && neg[q] == 1);
+      if (!hit) return true;
+    }
+    return false;
   }
 
   List<Time> gettimeset(RRuleFrequency freq, int hour, int minute, int second, int millisecond) {
