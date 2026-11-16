@@ -63,6 +63,7 @@ tools/verify.mjs        checks every fixture against python-dateutil and a brute
 tools/fuzz.mjs          fresh random rules for TS-vs-Dart differential runs
 tools/impact.mjs        which rules behave differently from an upstream rrule.js version
 docs/IMPACT.md          what changes for real events after switching, and how to count them
+docs/PERFORMANCE.md     benchmarks and where the time went
 .github/workflows/ci.yml
 ```
 
@@ -166,11 +167,18 @@ The Dart package has no TZID at all; callers convert the floating results.
 
 ## Performance
 
-Median of several rounds on an Apple Silicon Mac. Node 22 for TS; Dart 3.13
-AOT (as in the app) for Dart. Reproduce with `npm run bench` in `packages/ts`
-or `dart compile exe bench/bench.dart` in `packages/dart`.
+Median of several rounds on an Apple Silicon Mac: Node 22 for TS, Dart 3.13
+AOT (as in the app) for Dart. Full table and analysis:
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
-See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for the full table.
+| workload | rrule.js 2.8.0 | @morgen-so/rrule | morgen_rrule (Dart) |
+|---|---:|---:|---:|
+| weekly MO,WE,FR, 6 years: 1,000 expansions | 1,045 ms | 155 ms (6.7×) | 165 ms |
+| daily, 6 years: 1,000 expansions | 3,963 ms | 314 ms (13×) | 365 ms |
+| monthly 2nd Tuesday, 6 years: 1,000 expansions | 235 ms | 25 ms (9.4×) | 58 ms |
+| 3,722 random corpus rules, 1-year window | 12,931 ms | 79 ms (165×) | 71 ms |
+| `DAILY;BYDAY=SA,MO;BYSETPOS=2`, 2 years | ~4 s | < 1 ms | < 1 ms |
+| `HOURLY;INTERVAL=6;BYHOUR=3` from 00:00 | never returns | < 1 ms | < 1 ms |
 
 ## How each repository switches
 
