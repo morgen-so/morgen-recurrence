@@ -1,112 +1,130 @@
+// The RRULE iteration loop.
+//
+// Forked from rrule.js 2.8.0 (src/iter/index.ts). Differences, all shared with
+// the Dart package and pinned by the conformance fixtures:
+//  * plain and nth BYDAY values are OR-ed (RFC 5545); rrule.js AND-s them, so
+//    e.g. MONTHLY;BYDAY=2WE,SA produced nothing;
+//  * BYSETPOS positions past either end of the set select nothing and equal
+//    results are emitted once (see poslist.ts);
+//  * iteration stops as soon as a period starts after the requested upper
+//    bound or UNTIL, after `maxPeriods` periods, and when a sub-daily
+//    BYHOUR/BYMINUTE/BYSECOND can never be reached (rrule.js ran to year
+//    9999, or forever for FREQ=HOURLY;INTERVAL=6;BYHOUR=3).
+//
+// Performance: candidates are handled as epoch milliseconds (one Date per
+// emitted occurrence), the day set is a compact list of day-of-year indices
+// reused across periods, and year masks are rebuilt only when the year
+// changes.
 import IterResult from '../iterresult'
-import { ParsedOptions, freqIsDailyOrGreater, QueryMethodTypes } from '../types'
-import { combine, fromOrdinal, MAXYEAR } from '../dateutil'
+import { ParsedOptions, freqIsDailyOrGreater, QueryMethodTypes, Frequency } from '../types'
+import { MAXYEAR, ONE_DAY } from '../dateutil'
 import Iterinfo from '../iterinfo/index'
-import { RRule } from '../rrule'
 import { buildTimeset } from '../parseoptions'
-import { notEmpty, includes, isPresent } from '../helpers'
-import { DateWithZone } from '../datewithzone'
+import { notEmpty } from '../helpers'
+import { rezone, needsRezone } from '../timezone'
 import { buildPoslist } from './poslist'
 import { Time, DateTime } from '../datetime'
 
+/**
+ * Default safety net on the number of iterated periods (years for YEARLY,
+ * days for DAILY, hours for HOURLY…). Same value as the Dart package.
+ */
+export const DEFAULT_MAX_PERIODS = 200000
+
+/** Largest UTC offset difference a time zone adapter can introduce (ms). */
+const REZONE_SLACK = 2 * ONE_DAY
+
 export function iter<M extends QueryMethodTypes>(
   iterResult: IterResult<M>,
-  options: ParsedOptions
+  options: ParsedOptions,
+  maxPeriods: number = DEFAULT_MAX_PERIODS
 ) {
-  const { dtstart, freq, interval, until, bysetpos } = options
+  const { dtstart, freq, until, bysetpos, tzid } = options
 
   let count = options.count
-  if (count === 0 || interval === 0) {
+  if (count === 0 || options.interval === 0) {
     return emitResult(iterResult)
   }
 
-  const counterDate = DateTime.fromDate(dtstart)
+  const dtstartMs = dtstart.getTime()
+  const untilMs = until ? until.getTime() : Infinity
+  const doRezone = needsRezone(tzid)
 
+  // Floating upper bound: no period starting after it can produce a result.
+  let limitMs = untilMs
+  if (iterResult.maxDate) {
+    const maxMs =
+      iterResult.maxDate.getTime() + (doRezone ? REZONE_SLACK : 0)
+    if (maxMs < limitMs) limitMs = maxMs
+  }
+
+  const counterDate = DateTime.fromDate(dtstart)
   const ii = new Iterinfo(options)
   ii.rebuild(counterDate.year, counterDate.month)
 
-  let timeset = makeTimeset(ii, counterDate, options)
+  let timeset = toMillis(makeTimeset(ii, counterDate, options))
+  const hasSetpos = notEmpty(bysetpos)
+  const days = ii.days
 
-  for (;;) {
-    const [dayset, start, end] = ii.getdayset(freq)(
-      counterDate.year,
-      counterDate.month,
-      counterDate.day
-    )
+  for (let periods = 0; ; periods++) {
+    if (periods >= maxPeriods) return emitResult(iterResult)
+    if (limitMs !== Infinity && periodStart(counterDate, freq) > limitMs) {
+      return emitResult(iterResult)
+    }
 
-    const filtered = removeFilteredDays(dayset, start, end, ii, options)
+    const n = ii.fillDayset(freq, counterDate.year, counterDate.month, counterDate.day)
+    const filtered = ii.lastFiltered
+    const base = ii.yearordinal * ONE_DAY
 
-    if (notEmpty(bysetpos)) {
-      const poslist = buildPoslist(bysetpos, timeset, start, end, ii, dayset)
-
+    if (hasSetpos) {
+      const poslist = buildPoslist(bysetpos, timeset, days, n, base)
       for (let j = 0; j < poslist.length; j++) {
         const res = poslist[j]
-        if (until && res > until) {
-          return emitResult(iterResult)
-        }
-
-        if (res >= dtstart) {
-          const rezonedDate = rezoneIfNeeded(res, options)
-          if (!iterResult.accept(rezonedDate)) {
+        if (res > untilMs) return emitResult(iterResult)
+        if (res >= dtstartMs) {
+          if (!iterResult.accept(emit(res, tzid, doRezone))) {
             return emitResult(iterResult)
           }
-
           if (count) {
             --count
-            if (!count) {
-              return emitResult(iterResult)
-            }
+            if (!count) return emitResult(iterResult)
           }
         }
       }
     } else {
-      for (let j = start; j < end; j++) {
-        const currentDay = dayset[j]
-        if (!isPresent(currentDay)) {
-          continue
-        }
-
-        const date = fromOrdinal(ii.yearordinal + currentDay)
+      for (let j = 0; j < n; j++) {
+        const dayMs = base + days[j] * ONE_DAY
         for (let k = 0; k < timeset.length; k++) {
-          const time = timeset[k]
-          const res = combine(date, time)
-          if (until && res > until) {
-            return emitResult(iterResult)
-          }
-
-          if (res >= dtstart) {
-            const rezonedDate = rezoneIfNeeded(res, options)
-            if (!iterResult.accept(rezonedDate)) {
+          const res = dayMs + timeset[k]
+          if (res > untilMs) return emitResult(iterResult)
+          if (res >= dtstartMs) {
+            if (!iterResult.accept(emit(res, tzid, doRezone))) {
               return emitResult(iterResult)
             }
-
             if (count) {
               --count
-              if (!count) {
-                return emitResult(iterResult)
-              }
+              if (!count) return emitResult(iterResult)
             }
           }
         }
       }
-    }
-    if (options.interval === 0) {
-      return emitResult(iterResult)
     }
 
     // Handle frequency and interval
     counterDate.add(options, filtered)
 
-    if (counterDate.year > MAXYEAR) {
+    if (counterDate.exhausted || counterDate.year > MAXYEAR) {
       return emitResult(iterResult)
     }
 
     if (!freqIsDailyOrGreater(freq)) {
-      timeset = ii.gettimeset(freq)(
-        counterDate.hour,
-        counterDate.minute,
-        counterDate.second,
-        0
+      timeset = toMillis(
+        ii.gettimeset(freq)(
+          counterDate.hour,
+          counterDate.minute,
+          counterDate.second,
+          0
+        )
       )
     }
 
@@ -114,72 +132,49 @@ export function iter<M extends QueryMethodTypes>(
   }
 }
 
-function isFiltered(
-  ii: Iterinfo,
-  currentDay: number,
-  options: ParsedOptions
-): boolean {
-  const {
-    bymonth,
-    byweekno,
-    byweekday,
-    byeaster,
-    bymonthday,
-    bynmonthday,
-    byyearday,
-  } = options
-
-  return (
-    (notEmpty(bymonth) && !includes(bymonth, ii.mmask[currentDay])) ||
-    (notEmpty(byweekno) && !ii.wnomask[currentDay]) ||
-    (notEmpty(byweekday) && !includes(byweekday, ii.wdaymask[currentDay])) ||
-    (notEmpty(ii.nwdaymask) && !ii.nwdaymask[currentDay]) ||
-    (byeaster !== null && !includes(ii.eastermask, currentDay)) ||
-    ((notEmpty(bymonthday) || notEmpty(bynmonthday)) &&
-      !includes(bymonthday, ii.mdaymask[currentDay]) &&
-      !includes(bynmonthday, ii.nmdaymask[currentDay])) ||
-    (notEmpty(byyearday) &&
-      ((currentDay < ii.yearlen &&
-        !includes(byyearday, currentDay + 1) &&
-        !includes(byyearday, -ii.yearlen + currentDay)) ||
-        (currentDay >= ii.yearlen &&
-          !includes(byyearday, currentDay + 1 - ii.yearlen) &&
-          !includes(byyearday, -ii.nextyearlen + currentDay - ii.yearlen))))
-  )
+function emit(ms: number, tzid: string | null | undefined, doRezone: boolean) {
+  const date = new Date(ms)
+  return doRezone ? rezone(date, tzid) : date
 }
 
-function rezoneIfNeeded(date: Date, options: ParsedOptions) {
-  return new DateWithZone(date, options.tzid).rezonedDate()
+/** Earliest instant an occurrence of the period starting at `c` can have. */
+function periodStart(c: DateTime, freq: Frequency) {
+  switch (freq) {
+    case Frequency.YEARLY:
+      return Date.UTC(c.year, 0, 1)
+    case Frequency.MONTHLY:
+      return Date.UTC(c.year, c.month - 1, 1)
+    case Frequency.WEEKLY:
+    case Frequency.DAILY:
+      return Date.UTC(c.year, c.month - 1, c.day)
+    case Frequency.HOURLY:
+      return Date.UTC(c.year, c.month - 1, c.day, c.hour)
+    case Frequency.MINUTELY:
+      return Date.UTC(c.year, c.month - 1, c.day, c.hour, c.minute)
+    default:
+      return Date.UTC(c.year, c.month - 1, c.day, c.hour, c.minute, c.second)
+  }
+}
+
+function toMillis(timeset: Time[]): number[] {
+  const out = new Array<number>(timeset.length)
+  for (let i = 0; i < timeset.length; i++) {
+    const t = timeset[i]
+    out[i] =
+      ((t.hour * 60 + t.minute) * 60 + t.second) * 1000 + t.millisecond
+  }
+  return out
 }
 
 function emitResult<M extends QueryMethodTypes>(iterResult: IterResult<M>) {
   return iterResult.getValue()
 }
 
-function removeFilteredDays(
-  dayset: (number | null)[],
-  start: number,
-  end: number,
-  ii: Iterinfo,
-  options: ParsedOptions
-) {
-  let filtered = false
-  for (let dayCounter = start; dayCounter < end; dayCounter++) {
-    const currentDay = dayset[dayCounter]
-
-    filtered = isFiltered(ii, currentDay, options)
-
-    if (filtered) dayset[currentDay] = null
-  }
-
-  return filtered
-}
-
 function makeTimeset(
   ii: Iterinfo,
   counterDate: DateTime,
   options: ParsedOptions
-): Time[] | null {
+): Time[] {
   const { freq, byhour, byminute, bysecond } = options
 
   if (freqIsDailyOrGreater(freq)) {
@@ -187,15 +182,15 @@ function makeTimeset(
   }
 
   if (
-    (freq >= RRule.HOURLY &&
+    (freq >= Frequency.HOURLY &&
       notEmpty(byhour) &&
-      !includes(byhour, counterDate.hour)) ||
-    (freq >= RRule.MINUTELY &&
+      byhour.indexOf(counterDate.hour) === -1) ||
+    (freq >= Frequency.MINUTELY &&
       notEmpty(byminute) &&
-      !includes(byminute, counterDate.minute)) ||
-    (freq >= RRule.SECONDLY &&
+      byminute.indexOf(counterDate.minute) === -1) ||
+    (freq >= Frequency.SECONDLY &&
       notEmpty(bysecond) &&
-      !includes(bysecond, counterDate.second))
+      bysecond.indexOf(counterDate.second) === -1)
   ) {
     return []
   }

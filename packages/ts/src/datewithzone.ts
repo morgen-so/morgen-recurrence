@@ -1,4 +1,5 @@
-import { dateInTimeZone, timeToUntilString } from './dateutil'
+import { timeToUntilString } from './dateutil'
+import { isUTC, rezone } from './timezone'
 
 export class DateWithZone {
   public date: Date
@@ -13,7 +14,7 @@ export class DateWithZone {
   }
 
   private get isUTC() {
-    return !this.tzid || this.tzid.toUpperCase() === 'UTC'
+    return isUTC(this.tzid)
   }
 
   public toString() {
@@ -29,11 +30,12 @@ export class DateWithZone {
     return this.date.getTime()
   }
 
+  /**
+   * The date as returned to callers: unchanged for floating/UTC rules,
+   * otherwise converted by the installed TimeZoneAdapter (see timezone.ts).
+   * rrule.js used Intl here; this fork has no built-in time zone support.
+   */
   public rezonedDate() {
-    if (this.isUTC) {
-      return this.date
-    }
-
-    return dateInTimeZone(this.date, this.tzid)
+    return rezone(this.date, this.tzid)
   }
 }

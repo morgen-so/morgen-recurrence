@@ -18,7 +18,7 @@ import { parseString } from './parsestring'
 import { optionsToString } from './optionstostring'
 import { Cache, CacheKeys } from './cache'
 import { Weekday } from './weekday'
-import { iter } from './iter/index'
+import { iter, DEFAULT_MAX_PERIODS } from './iter/index'
 
 // =============================================================================
 // RRule
@@ -68,6 +68,11 @@ export class RRule implements QueryMethods {
   public _cache: Cache | null
   public origOptions: Partial<Options>
   public options: ParsedOptions
+  /**
+   * Safety net on the number of periods iterated per query (years for
+   * YEARLY, days for DAILY…), on top of COUNT, UNTIL and the query bounds.
+   */
+  public maxPeriods: number = DEFAULT_MAX_PERIODS
 
   // RRule class 'constants'
 
@@ -126,7 +131,7 @@ export class RRule implements QueryMethods {
   protected _iter<M extends QueryMethodTypes>(
     iterResult: IterResult<M>
   ): IterResultType<M> {
-    return iter(iterResult, this.options)
+    return iter(iterResult, this.options, this.maxPeriods)
   }
 
   private _cacheGet(what: CacheKeys | 'all', args?: Partial<IterArgs>) {

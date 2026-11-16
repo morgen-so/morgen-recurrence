@@ -18,7 +18,15 @@ export { RRule } from './rrule'
 export { RRuleSet } from './rruleset'
 
 export { rrulestr } from './rrulestr'
-export { Frequency, ByWeekday, Options } from './types'
-export { Weekday, WeekdayStr, ALL_WEEKDAYS } from './weekday'
-export { RRuleStrOptions } from './rrulestr'
+export { Frequency } from './types'
+export type { ByWeekday, Options } from './types'
+export { Weekday, ALL_WEEKDAYS } from './weekday'
+export type { WeekdayStr } from './weekday'
+export type { RRuleStrOptions } from './rrulestr'
 export { datetime } from './dateutil'
+export type { TimeZoneAdapter } from './timezone'
+export {
+  setTimeZoneAdapter,
+  getTimeZoneAdapter,
+} from './timezone'
+export { DEFAULT_MAX_PERIODS } from './iter/index'

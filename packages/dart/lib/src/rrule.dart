@@ -60,6 +60,28 @@ class RRule {
     }
   }
 
+  /// First occurrence after [dt] (rrule.js `after`), or equal to it with
+  /// [inclusive]. Null if there is none within [maxPeriods] periods.
+  DateTime? after(DateTime dt, {bool inclusive = false}) {
+    final a = floating(dt);
+    for (final d in iterate()) {
+      if (inclusive ? !d.isBefore(a) : d.isAfter(a)) return d;
+    }
+    return null;
+  }
+
+  /// Last occurrence before [dt] (rrule.js `before`), or equal to it with
+  /// [inclusive].
+  DateTime? before(DateTime dt, {bool inclusive = false}) {
+    final b = floating(dt);
+    DateTime? last;
+    for (final d in iterate(before: b)) {
+      if (inclusive ? d.isAfter(b) : !d.isBefore(b)) break;
+      last = d;
+    }
+    return last;
+  }
+
   /// All occurrences, at most [limit]. Meant for COUNT/UNTIL-bounded rules;
   /// unbounded rules stop after [maxPeriods] periods.
   List<DateTime> all({int? limit}) {

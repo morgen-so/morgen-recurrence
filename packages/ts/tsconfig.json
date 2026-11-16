@@ -9,7 +9,8 @@
     "target": "es2018",
     "lib": ["es2019"],
     "types": ["jest", "node"],
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "isolatedModules": true
   },
   "include": ["./src/**/*", "./test/**/*"]
 }

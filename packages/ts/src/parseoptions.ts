@@ -180,6 +180,8 @@ export function parseOptions(options: Partial<Options>) {
     opts.byhour = opts.freq < RRule.HOURLY ? [opts.dtstart.getUTCHours()] : null
   } else if (isNumber(opts.byhour)) {
     opts.byhour = [opts.byhour]
+  } else {
+    opts.byhour = sortedUnique(opts.byhour)
   }
 
   // byminute
@@ -188,6 +190,8 @@ export function parseOptions(options: Partial<Options>) {
       opts.freq < RRule.MINUTELY ? [opts.dtstart.getUTCMinutes()] : null
   } else if (isNumber(opts.byminute)) {
     opts.byminute = [opts.byminute]
+  } else {
+    opts.byminute = sortedUnique(opts.byminute)
   }
 
   // bysecond
@@ -196,9 +200,23 @@ export function parseOptions(options: Partial<Options>) {
       opts.freq < RRule.SECONDLY ? [opts.dtstart.getUTCSeconds()] : null
   } else if (isNumber(opts.bysecond)) {
     opts.bysecond = [opts.bysecond]
+  } else {
+    opts.bysecond = sortedUnique(opts.bysecond)
   }
 
   return { parsedOptions: opts as ParsedOptions }
+}
+
+/**
+ * Morgen fix: BYHOUR/BYMINUTE/BYSECOND are sorted and de-duplicated so that
+ * occurrences within a day come out in chronological order (rrule.js kept the
+ * given order: BYHOUR=18,9 emitted 18:00 before 9:00, which also made UNTIL
+ * stop the iteration early, and repeated duplicates).
+ */
+function sortedUnique(values: number[]): number[] {
+  return values
+    .filter((v, i) => values.indexOf(v) === i)
+    .sort((a, b) => a - b)
 }
 
 export function buildTimeset(opts: ParsedOptions) {

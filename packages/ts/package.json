@@ -15,15 +15,19 @@
   "exports": {
     ".": {
       "types": "./dist/esm/index.d.ts",
-      "import": "./dist/esm/index.js",
-      "require": "./dist/cjs/index.js"
+      "module": "./dist/esm/index.js",
+      "default": "./dist/cjs/index.js"
     },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
-  "files": ["dist", "LICENCE", "README.md"],
+  "files": [
+    "dist",
+    "LICENCE",
+    "README.md"
+  ],
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.build.json --module commonjs --outDir dist/cjs --declaration false --declarationMap false && echo '{\"type\":\"commonjs\"}' > dist/cjs/package.json && echo '{\"type\":\"module\"}' > dist/esm/package.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json && tsc -p tsconfig.build.json --module commonjs --outDir dist/cjs --declaration false --declarationMap false --sourceMap false",
     "typecheck": "tsc -p tsconfig.json",
     "test": "TZ=UTC jest",
     "conformance": "TZ=UTC jest test/conformance.test.ts",

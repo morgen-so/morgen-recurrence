@@ -1,5 +1,6 @@
 export { datetime } from '../../src/dateutil'
-import { dateInTimeZone, datetime } from '../../src/dateutil'
+import { datetime } from '../../src/dateutil'
+import { dateInTimeZone } from './intlAdapter'
 import { RRule, RRuleSet } from '../../src'
 
 export const TEST_CTX = {

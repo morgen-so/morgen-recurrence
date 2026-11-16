@@ -157,6 +157,106 @@ class RRuleOptions {
     );
   }
 
+  static const _rfcDays = {'MO': 0, 'TU': 1, 'WE': 2, 'TH': 3, 'FR': 4, 'SA': 5, 'SU': 6};
+
+  /// Parses an RFC 5545 RRULE value such as `FREQ=MONTHLY;BYDAY=2WE,SA;COUNT=5`
+  /// (an `RRULE:` prefix is accepted), like rrule.js `RRule.parseString`.
+  ///
+  /// UNTIL may be `YYYYMMDD`, `YYYYMMDDTHHMMSS` or `YYYYMMDDTHHMMSSZ`; it is
+  /// read as a floating time either way. Throws [FormatException] on unknown
+  /// properties or malformed values (rrule.js throws too). BYEASTER, DTSTART
+  /// and TZID are not supported: time zones are the caller's business.
+  static RRuleOptions parse(String rrule, {required DateTime dtstart}) {
+    var body = rrule.trim();
+    if (body.toUpperCase().startsWith('RRULE:')) body = body.substring(6);
+    RRuleFrequency? freq;
+    var interval = 1;
+    int? count;
+    DateTime? until;
+    RRuleWeekday? wkst;
+    List<int>? bysetpos, bymonth, bymonthday, byyearday, byweekno, byhour, byminute, bysecond;
+    List<RRuleWeekday>? byweekday;
+
+    List<int> ints(String v) => [
+          for (final p in v.split(','))
+            if (RegExp(r'^[+-]?\d+$').hasMatch(p))
+              int.parse(p.startsWith('+') ? p.substring(1) : p)
+            else
+              throw FormatException('Invalid number in RRULE: $p')
+        ];
+
+    for (final attr in body.split(';')) {
+      if (attr.isEmpty) continue;
+      final eq = attr.indexOf('=');
+      if (eq < 0) throw FormatException('Invalid RRULE part: $attr');
+      final key = attr.substring(0, eq).toUpperCase(), value = attr.substring(eq + 1);
+      switch (key) {
+        case 'FREQ':
+          freq = _frequencies[value.toLowerCase()] ??
+              (throw FormatException('Invalid FREQ: $value'));
+        case 'INTERVAL':
+          interval = ints(value).single;
+        case 'COUNT':
+          count = ints(value).single;
+        case 'UNTIL':
+          final m = RegExp(r'^(\d{4})(\d{2})(\d{2})(T(\d{2})(\d{2})(\d{2})Z?)?$').firstMatch(value);
+          if (m == null) throw FormatException('Invalid UNTIL value: $value');
+          int g(int i) => int.parse(m.group(i) ?? '0');
+          until = DateTime.utc(g(1), g(2), g(3), g(5), g(6), g(7));
+        case 'WKST':
+          final d = _rfcDays[value.toUpperCase()];
+          if (d == null) throw FormatException('Invalid WKST: $value');
+          wkst = RRuleWeekday.values[d];
+        case 'BYDAY' || 'BYWEEKDAY':
+          byweekday = [
+            for (final day in value.split(','))
+              () {
+                final m = RegExp(r'^([+-]?\d{1,2})?([A-Z]{2})$').firstMatch(day);
+                final d = m == null ? null : _rfcDays[m.group(2)];
+                if (d == null) throw FormatException('Invalid weekday string: $day');
+                final n = m!.group(1) == null ? null : int.parse(m.group(1)!.replaceFirst('+', ''));
+                return RRuleWeekday(d, n == 0 ? null : n);
+              }()
+          ];
+        case 'BYSETPOS':
+          bysetpos = ints(value);
+        case 'BYMONTH':
+          bymonth = ints(value);
+        case 'BYMONTHDAY':
+          bymonthday = ints(value);
+        case 'BYYEARDAY':
+          byyearday = ints(value);
+        case 'BYWEEKNO':
+          byweekno = ints(value);
+        case 'BYHOUR':
+          byhour = ints(value);
+        case 'BYMINUTE':
+          byminute = ints(value);
+        case 'BYSECOND':
+          bysecond = ints(value);
+        default:
+          throw FormatException("Unknown RRULE property '$key'");
+      }
+    }
+    return RRuleOptions(
+      freq: freq ?? RRuleFrequency.yearly,
+      dtstart: dtstart,
+      interval: interval,
+      wkst: wkst,
+      count: count,
+      until: until,
+      bysetpos: bysetpos,
+      bymonth: bymonth,
+      bymonthday: bymonthday,
+      byyearday: byyearday,
+      byweekno: byweekno,
+      byweekday: byweekday,
+      byhour: byhour,
+      byminute: byminute,
+      bysecond: bysecond,
+    );
+  }
+
   /// LocalDateTime ("2024-01-31T09:00:00"); a trailing "Z" or a date-only
   /// value are tolerated.
   static DateTime _parseFloating(String s) {

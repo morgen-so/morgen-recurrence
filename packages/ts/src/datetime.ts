@@ -1,6 +1,6 @@
 import { ParsedOptions, Frequency } from './types'
 import { pymod, divmod, empty, includes } from './helpers'
-import { getWeekday, MAXYEAR, monthRange } from './dateutil'
+import { MAXYEAR, monthRange } from './dateutil'
 
 export class Time {
   public hour: number
@@ -49,6 +49,12 @@ export class DateTime extends Time {
   public month: number
   public year: number
 
+  /**
+   * Set when a sub-daily BYHOUR/BYMINUTE/BYSECOND can never be reached
+   * (rrule.js looped forever there, e.g. FREQ=HOURLY;INTERVAL=6;BYHOUR=3).
+   */
+  public exhausted = false
+
   static fromDate(date: Date) {
     return new this(
       date.getUTCFullYear(),
@@ -77,7 +83,9 @@ export class DateTime extends Time {
   }
 
   getWeekday() {
-    return getWeekday(new Date(this.getTime()))
+    // Monday = 0; 1970-01-01 was a Thursday.
+    const days = Math.floor(Date.UTC(this.year, this.month - 1, this.day) / 86400000)
+    return pymod(days + 3, 7)
   }
 
   getTime() {
@@ -145,7 +153,12 @@ export class DateTime extends Time {
       this.hour += Math.floor((23 - this.hour) / hours) * hours
     }
 
-    for (;;) {
+    // The hour sequence repeats after at most 24 steps.
+    for (let steps = 0; ; steps++) {
+      if (steps > 24) {
+        this.exhausted = true
+        return
+      }
       this.hour += hours
       const { div: dayDiv, mod: hourMod } = divmod(this.hour, 24)
       if (dayDiv) {
@@ -169,12 +182,18 @@ export class DateTime extends Time {
         Math.floor((1439 - (this.hour * 60 + this.minute)) / minutes) * minutes
     }
 
-    for (;;) {
+    // (hour, minute) has 1440 states.
+    for (let steps = 0; ; steps++) {
+      if (steps > 1440) {
+        this.exhausted = true
+        return
+      }
       this.minute += minutes
       const { div: hourDiv, mod: minuteMod } = divmod(this.minute, 60)
       if (hourDiv) {
         this.minute = minuteMod
         this.addHours(hourDiv, false, byhour)
+        if (this.exhausted) return
       }
 
       if (
@@ -202,12 +221,18 @@ export class DateTime extends Time {
         ) * seconds
     }
 
-    for (;;) {
+    // (hour, minute, second) has 86400 states.
+    for (let steps = 0; ; steps++) {
+      if (steps > 86400) {
+        this.exhausted = true
+        return
+      }
       this.second += seconds
       const { div: minuteDiv, mod: secondMod } = divmod(this.second, 60)
       if (minuteDiv) {
         this.second = secondMod
         this.addMinutes(minuteDiv, false, byhour, byminute)
+        if (this.exhausted) return
       }
 
       if (
