@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: read
+      contents: write
       packages: write
     defaults:
       run:
@@ -52,3 +52,12 @@ jobs:
         run: npm view "@morgen-so/rrule@${GITHUB_REF_NAME#ts-v}" dist --json
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The same tarball on a GitHub release, for consumers that install
+      # without a GitHub Packages token (a tarball URL dependency).
+      - name: Attach tarball to a GitHub release
+        run: |
+          npm pack
+          gh release create "$GITHUB_REF_NAME" morgen-so-rrule-*.tgz \
+            --title "@morgen-so/rrule ${GITHUB_REF_NAME#ts-v}" --notes "npm: @morgen-so/rrule@${GITHUB_REF_NAME#ts-v}"
+        env:
+          GH_TOKEN: ${{ github.token }}
