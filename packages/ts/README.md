@@ -71,20 +71,17 @@ are described in the [repository README](../../README.md#what-changes-compared-w
 - **Packaging.** ES2018 output: `dist/cjs` for `require` and Node, `dist/esm`
   through the `module` condition for bundlers. There is no UMD bundle.
 
-## API used by Morgen
+## API compatibility
 
-Every call shape below is exercised against upstream rrule 2.8.0 in
+The common call shapes below are exercised against upstream rrule 2.8.0 in
 [`test/api-compat.test.ts`](test/api-compat.test.ts):
 
-| call | where |
-|---|---|
-| `rrulestr('DTSTART;TZID=UTC:…\nRRULE:…')`, then `.between(a, b, true)`, `.origOptions.until/.count`, assigning `.options.until` | `recurrenceExpand.ts` in minetime, omnia, morgen-backend, morgen-integration-service |
-| `rrulestr('DTSTART:…\n…').after(date, false)` | `TaskObservable.ts` (minetime, omnia), `integrations/providers/morgen/utils.ts` (backend) |
-| `RRule.fromString(str)`, `.origOptions`, `.toString()`, `new RRule({...origOptions, freq})` | `utils/calendars/calendars.ts`, `scripts/recurrence/utils.ts` (minetime, omnia) |
-| `RRule.parseString(body)`, `new RRule(options)`, `.after(d, false)`, `.all(callback)` | `agenticWorkflows/rrule.ts` (backend), `validateScheduleRRule.ts` (omnia) |
-| `RRule.parseText(text)`, `new RRule(options)`, `.toText()`, `.options.freq` | `CmdMenu/utils/inferEventProps.tsx`, `obsidian/tasksPlugin/Recurrence.ts` (minetime, omnia) |
-| `RRule.YEARLY … SECONDLY`, `Frequency`, `Weekday` (`instanceof`), types `ByWeekday`, `Options` | throughout |
-| `RRuleSet` | imported in `TaskObservable.ts` |
+- `rrulestr('DTSTART;TZID=UTC:…\nRRULE:…')`, then `.between(a, b, true)`, `.origOptions.until/.count`, assigning `.options.until`;
+- `rrulestr('DTSTART:…\n…').after(date, false)`;
+- `RRule.fromString(str)`, `.origOptions`, `.toString()`, `new RRule({...origOptions, freq})`;
+- `RRule.parseString(body)`, `new RRule(options)`, `.after(d, false)`, `.all(callback)`;
+- `RRule.parseText(text)`, `new RRule(options)`, `.toText()`, `.options.freq`;
+- `RRule.YEARLY … SECONDLY`, `Frequency`, `Weekday` (`instanceof`), types `ByWeekday`, `Options`, `RRuleSet`.
 
 The rest of the rrule.js API is unchanged and covered by rrule.js's own
 tests in `test/`: `RRuleSet` with `rdate`/`exdate`/`exrule`, `before`, `count`,

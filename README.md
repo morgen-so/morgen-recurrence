@@ -1,12 +1,12 @@
 # morgen-recurrence
 
-RFC 5545 recurrence rule (RRULE) expansion for Morgen, in two small idiomatic
+RFC 5545 recurrence rule (RRULE) expansion in two small idiomatic
 implementations that must produce **identical** results:
 
-| package | language | used by | origin |
-|---|---|---|---|
-| [`packages/ts`](packages/ts) — `@morgen-so/rrule` | TypeScript | desktop (`minetime`), Kai (`omnia`), `morgen-backend`, `morgen-integration-service` | fork of [rrule.js](https://github.com/jkbrzt/rrule) 2.8.0, drop-in API |
-| [`packages/dart`](packages/dart) — `morgen_rrule` | Dart | mobile app | port of the rrule.js core, previously in `lib/services/LocalEventStore/rrule` |
+| package | language | origin |
+|---|---|---|
+| [`packages/ts`](packages/ts) — `@morgen-so/rrule` | TypeScript | fork of [rrule.js](https://github.com/jkbrzt/rrule) 2.8.0, drop-in API |
+| [`packages/dart`](packages/dart) — `morgen_rrule` | Dart | port of the rrule.js core |
 
 Both run one shared conformance corpus, [`fixtures/`](fixtures), in CI, plus a
 differential fuzz job on fresh random rules. Neither package contains time
@@ -82,8 +82,7 @@ These came out of the [correctness review of 16 November 2026](docs/REVIEW-2026-
 11. **Dart only**:
     - `iterate(before:)` never yields past its bound;
     - `fromJsCalendar` adds RFC 8984's implicit properties (a yearly rule with
-      `byMonthDay` means the start month only, as desktop already does through
-      `ensureValidYearlyRecurrence`).
+      `byMonthDay` means the start month only).
 
 Performance work, with identical results (see the [benchmarks](#performance)):
 
@@ -216,8 +215,8 @@ node tools/verify.mjs /tmp/fuzz.json   # the oracle checks the TS expectations
 
 Neither library contains time zone data or calls `Intl`. Rules are expanded
 on floating times: `Date`/`DateTime` values whose UTC fields hold the wall
-clock. That is how every Morgen caller already uses rrule.js: it passes
-`DTSTART;TZID=UTC:…` and converts with moment-timezone or morgen-tz-service.
+clock. Callers that pass `DTSTART;TZID=UTC:…` and convert the results with
+their own time-zone library keep working unchanged.
 
 The TypeScript package keeps rrule.js's TZID syntax. When a rule or set has a
 TZID other than UTC, it asks an injected adapter to convert. Without an
@@ -328,41 +327,17 @@ corpus and a 100,000-rule TS-vs-Dart fuzz run unchanged.
      the output is identical.
 
 The Dart package uses the same structure (lookup tables, reused buffers,
-epoch-ms candidates). That made it about 1.3–2.7× faster than the port
-previously in the mobile app, which already cached year masks but built two
-`DateTime`s per candidate.
+epoch-ms candidates). That made it about 1.3–2.7× faster than the Dart port
+it started from, which already cached year masks but built two `DateTime`s per
+candidate.
 
-## How each repository switches
+## Migrating from rrule.js
 
-**First, in every repository:** wrap each event's `expandEventRecurrence`
-call in `try/catch`. Rules with values outside RFC 5545's ranges now throw
-instead of hanging or producing odd dates; see
-[docs/IMPACT.md](docs/IMPACT.md#required-before-rollout).
-
-The TypeScript package is API-compatible with rrule.js for every call our
-repos make. These are listed in [packages/ts/README.md](packages/ts/README.md#api-used-by-morgen)
-and exercised by `packages/ts/test/api-compat.test.ts`.
-
-- **minetime, omnia, morgen-backend**: change only `package.json`. Keep every
-  `import … from 'rrule'` with an npm alias:
-  `"rrule": "npm:@morgen-so/rrule@2.8.0-morgen.1"`. Alternatively, depend on
-  `@morgen-so/rrule` and replace the 7 / 7 / 3 imports. Run the existing
-  `recurrenceExpand.spec.ts` suites.
-- **morgen-integration-service** (rrule.js 2.6.4 today): the same alias. Between
-  2.6.4 and 2.8.0 the expansion core did not change; the Luxon dependency was
-  dropped and `daysBetween` no longer applies the local UTC offset. The service
-  imports named exports only, so 2.7's removal of the default export does not
-  affect it. `isRecurrenceExpansionSafe` can stay, but it is no longer needed
-  to avoid hangs.
-- **mobile**: add the dependency
-  `morgen_rrule: {git: {url: …/morgen-recurrence.git, path: packages/dart, ref: <tag>}}`.
-  Change the imports of `lib/services/LocalEventStore/rrule/rrule.dart` to
-  `package:morgen_rrule/morgen_rrule.dart`, then delete the local copy and its
-  three `test/rrule_*` files (now covered here). The API is the same, plus
-  `RRuleOptions.parse`, `after` and `before`.
-
-Publishing (`@morgen-so/rrule` to npm or GitHub Packages, a git tag for the
-Dart package) and creating the GitHub repository have not been done yet.
+`@morgen-so/rrule` keeps rrule.js's API, so an npm alias is enough:
+`"rrule": "npm:@morgen-so/rrule@<version>"`. Rules with values outside
+RFC 5545's ranges now throw from `rrulestr`/`new RRule` instead of hanging or
+producing odd dates, so catch errors per rule when expanding untrusted input.
+See [docs/IMPACT.md](docs/IMPACT.md) for every behaviour change.
 
 ## Licence
 
