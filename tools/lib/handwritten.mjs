@@ -86,8 +86,8 @@ export const REGRESSIONS = [
     dtstart: '2024-01-01T09:00:00', rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;BYMONTH=4,6', query: { method: 'before', dt: '2030-01-01T00:00:00', inc: false },
     expected: null,
   },
-  // The runaway safety net must not cut off productive rules: e.g. backend
-  // workflow schedules call after(now) on rules anchored long ago.
+  // The runaway safety net must not cut off productive rules: e.g.
+  // schedulers call after(now) on rules anchored long ago.
   {
     bug: 'period-cap', note: 'MINUTELY rule anchored 17 months earlier (~760k periods): after() must still find the next run',
     dtstart: '2024-01-01T00:00:00', rrule: 'FREQ=MINUTELY;INTERVAL=30', query: { method: 'after', dt: '2025-06-01T00:10:00', inc: false },

@@ -41,7 +41,7 @@ function bench(name, fn, { warmup = 3, rounds = 9 } = {}) {
   );
 }
 
-// Like recurrenceExpand.ts in desktop/backend: rrulestr with a UTC DTSTART
+// Typical event expansion: rrulestr with a UTC DTSTART
 // line, between() over a window, no limit.
 function expand(lib, cases, windowDays) {
   let n = 0;

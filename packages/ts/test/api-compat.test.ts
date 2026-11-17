@@ -1,6 +1,5 @@
-// Drop-in compatibility with rrule.js 2.8.0 for the calls made by Morgen's
-// repos (minetime, omnia, morgen-backend, morgen-integration-service). Each
-// test mirrors a call site and compares the fork with upstream rrule 2.8.0
+// Drop-in compatibility with rrule.js 2.8.0 for common call shapes. Each
+// test mirrors a typical call site and compares the fork with upstream rrule 2.8.0
 // (devDependency) on ordinary rules, where none of the fixed bugs apply.
 import * as fork from '../src/index'
 import { setTimeZoneAdapter } from '../src/timezone'
@@ -27,7 +26,7 @@ const RULES = [
   'FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=12',
 ]
 
-describe('recurrenceExpand.ts (desktop, Kai, backend, sync service)', () => {
+describe('event expansion: rrulestr(DTSTART;TZID=UTC + RRULE).between', () => {
   // rrulestr with a DTSTART;TZID=UTC line, options.until mutated after
   // parsing, between(..., true), origOptions.until/count read back.
   it.each(RULES)('%s', (rule) => {
@@ -51,13 +50,13 @@ describe('recurrenceExpand.ts (desktop, Kai, backend, sync service)', () => {
   })
 })
 
-describe('tasks: rrulestr(DTSTART + RRULE).after(date, false) (TaskObservable, backend morgen provider)', () => {
+describe('tasks: rrulestr(DTSTART + RRULE).after(date, false)', () => {
   it.each(RULES)('%s', (rule) => {
     same((lib) => iso(lib.rrulestr(`DTSTART:20240115\n${rule}`).after(new Date('2024-03-01T00:00:00Z'), false)))
   })
 })
 
-describe('RRule.fromString / toString (calendars.ts, scripts/recurrence)', () => {
+describe('RRule.fromString / toString', () => {
   it.each(RULES)('%s', (rule) => {
     same((lib) => {
       const r = lib.RRule.fromString(`RRULE:${rule}`)
@@ -87,7 +86,7 @@ describe('RRule.fromString / toString (calendars.ts, scripts/recurrence)', () =>
   })
 })
 
-describe('RRule.parseString + new RRule + after/all (backend & Kai workflow schedules)', () => {
+describe('RRule.parseString + new RRule + after/all (schedules)', () => {
   it('parseRRule: parseString, defaulted BY* parts, after()', () => {
     same((lib) => {
       const options = lib.RRule.parseString('FREQ=DAILY;BYHOUR=8,12')
@@ -120,7 +119,7 @@ describe('RRule.parseString + new RRule + after/all (backend & Kai workflow sche
   })
 })
 
-describe('NLP: RRule.parseText / toText (inferEventProps, obsidian tasks plugin)', () => {
+describe('NLP: RRule.parseText / toText', () => {
   it.each(['every week on monday', 'every 2 days', 'every month on the 3rd', 'every weekday'])('%s', (text) => {
     same((lib) => {
       const options = lib.RRule.parseText(text)

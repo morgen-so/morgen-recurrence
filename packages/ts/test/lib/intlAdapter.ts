@@ -1,8 +1,8 @@
 // TEST ONLY. Reproduces rrule.js 2.8.0's built-in Intl time zone conversion
 // (src/dateutil.ts dateInTimeZone, removed from the library) as a
 // TimeZoneAdapter, so that rrule.js's own TZID tests keep checking that the
-// adapter is called exactly where rrule.js converted. Morgen code must plug
-// in its own adapter (moment-timezone / morgen-tz-service), never this one.
+// adapter is called exactly where rrule.js converted. Applications must plug
+// in their own adapter (e.g. moment-timezone), never this one.
 import { TimeZoneAdapter } from '../../src/timezone'
 
 const dateTZtoISO8601 = function (date: Date, timeZone: string) {

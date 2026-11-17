@@ -1,5 +1,5 @@
-// Random rule generators. Adapted from morgen-mobile tool/rrule_diff
-// (gen_fixtures.mjs, gen_fixtures_weekno.mjs), plus a sub-daily generator.
+// Random rule generators. Adapted from the earlier Dart port's diff
+// tools (gen_fixtures.mjs, gen_fixtures_weekno.mjs), plus a sub-daily generator.
 // Each returns {dtstart, rrule, jscal, features, query}; expected values are
 // filled in by the caller from the fixed TypeScript package.
 import { prng, pad, fmt, toRRuleString } from './common.mjs';

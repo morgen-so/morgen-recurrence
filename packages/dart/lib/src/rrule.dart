@@ -1,16 +1,16 @@
 // Recurrence rule (RFC 5545 RRULE) expansion engine.
 //
 // A port of the expansion core of rrule.js 2.8.0
-// (https://github.com/jkbrzt/rrule), the engine used by Morgen desktop and the
-// sync service, so that mobile produces the same occurrences.
+// (https://github.com/jkbrzt/rrule), so that Dart and TypeScript produce the
+// same occurrences.
 // rrule.js: Copyright 2010, Jakub Roztocil and Lars Schöning.
 // Based on python-dateutil: Copyright (c) 2003-2011 Gustavo Niemeyer,
 // Copyright (c) 2012 Tomi Pieviläinen. Distributed under the BSD 3-Clause
 // licence reproduced in full in the LICENCE file next to this file.
 //
 // Rules are evaluated on floating times: DateTime values with isUtc=true
-// holding wall-clock fields (like desktop, which converts to the event's time
-// zone afterwards). There is no TZID, RRuleSet or caching: time zones are
+// holding wall-clock fields (the caller converts to the event's time zone
+// afterwards). There is no TZID, RRuleSet or caching: time zones are
 // the caller's business.
 //
 // Differences from rrule.js, verified by test/rrule_diff_test.dart:

@@ -2,8 +2,8 @@
 
 Comparison of upstream rrule.js with this fork (both packages behave
 identically). Measured with `tools/impact.mjs` on the corpus. rrule.js 2.6.4
-(sync service) and 2.8.0 (desktop, Kai, backend) give **exactly the same
-numbers**: the expansion core did not change between them.
+and 2.8.0 give **exactly the same numbers**: the expansion core did not change
+between them.
 
 ## Summary
 
@@ -17,17 +17,16 @@ rate says nothing about production; the shapes are what matter.
 |---|---|---|---|---|
 | 1 | MONTHLY/YEARLY with **plain and nth weekdays mixed** in BYDAY, e.g. `BYDAY=2WE,SA` | no occurrences at all | days matching either part (RFC 5545) | rare: Google, Outlook and Apple UIs cannot create it; it comes from hand-written or imported ICS. Events that were invisible appear. |
 | 2 | **BYSETPOS** with a negative position larger than the set (`BYDAY=MO;BYSETPOS=-5` in a 4-Monday month), or positions that hit the same occurrence (`BYSETPOS=1,-1` on a one-element set) | first element of the set / duplicates | nothing / one occurrence | uncommon. The usual provider shapes (`BYSETPOS=-1` or `1`..`4` with a weekday list, "last weekday", "first Monday") are **not** affected unless the period has fewer candidates than the position. Most likely real case: "5th/last-but-4 X" rules. |
-| 3 | **unsorted or duplicate BYHOUR/BYMINUTE/BYSECOND**, e.g. `DAILY;BYHOUR=18,9` | times out of order; with COUNT or UNTIL the series ends at the wrong place (one occurrence too few or too many on the last day) | sorted; COUNT/UNTIL exact | very rare: calendar providers do not emit BYHOUR for events, and desktop/Kai reject rules with several times per day. Mostly agentic-workflow schedules (`BYHOUR=8,12,18`). Only multi-value lists in non-ascending order are affected. |
-| 4 | **MINUTELY/SECONDLY with BYHOUR or BYMINUTE** that must carry into the next hour/minute | wrong times (INTERVAL grid misaligned), skipped days, or an infinite loop | python-dateutil's results | essentially none for events. Workflow schedules could use it; desktop/Kai reject sub-daily rules. |
-| 5 | rules that **never match**, or unreachable sub-daily combinations (`HOURLY;INTERVAL=6;BYHOUR=3` from 00:00) | same empty result after seconds of CPU, or a hang | empty result immediately | rare, but each one costs seconds of CPU per expansion, on desktop's main path or in a backend request. `isRecurrenceExpansionSafe` in the sync service exists partly because of this. |
+| 3 | **unsorted or duplicate BYHOUR/BYMINUTE/BYSECOND**, e.g. `DAILY;BYHOUR=18,9` | times out of order; with COUNT or UNTIL the series ends at the wrong place (one occurrence too few or too many on the last day) | sorted; COUNT/UNTIL exact | very rare: calendar providers do not emit BYHOUR for events. Mostly scheduling rules (`BYHOUR=8,12,18`). Only multi-value lists in non-ascending order are affected. |
+| 4 | **MINUTELY/SECONDLY with BYHOUR or BYMINUTE** that must carry into the next hour/minute | wrong times (INTERVAL grid misaligned), skipped days, or an infinite loop | python-dateutil's results | essentially none for events. Scheduling rules could use it. |
+| 5 | rules that **never match**, or unreachable sub-daily combinations (`HOURLY;INTERVAL=6;BYHOUR=3` from 00:00) | same empty result after seconds of CPU, or a hang | empty result immediately | rare, but each one costs seconds of CPU per expansion, on a UI thread or in a server request. |
 | 6 | **values outside RFC 5545's ranges**: `INTERVAL=-1`, `INTERVAL=abc`, `COUNT=-1`, `BYHOUR=25`, `BYMONTHDAY=0`, `BYWEEKNO=54`… | a hang (negative or non-numeric INTERVAL), an unbounded series (negative COUNT), or silently shifted dates | **an exception** | rare, from hand-written or broken ICS feeds. **See "Required before rollout" below.** |
 | 7 | **BYWEEKNO** whose weeks cross a year boundary (week 1, 52, 53, negative weeks) | days of the week that falls in the neighbouring year are lost or invented | ISO 8601 week numbering with WKST | rare: providers almost never emit BYWEEKNO. |
 | 8 | **WEEKLY + BYSETPOS** with DTSTART not on the first day of the week | in the first week, positions counted from DTSTART: one extra or different first occurrence | positions counted over the whole week, as in later weeks | rare. Only the first week changes. |
 | 9 | **SKIP** (`RSCALE=GREGORIAN;SKIP=…`, RFC 7529) | rrule.js throws "Unknown RRULE property" | supported | rare; from RFC 7529-aware servers. Events that could not be expanded at all now are. |
-| 10 | **mobile: JSCalendar yearly rules with `byMonthDay` and no `byMonth`** | mobile expanded them *monthly* (e.g. every 15th) | the start month only, per RFC 8984; desktop and the backend already did this via `ensureValidYearlyRecurrence` | removes a real mobile/desktop divergence. Also yearly + `byWeekNo` only: now only the start weekday (RFC 8984), whereas desktop expands all 7 days of the week. That is very rare; the JSCalendar converter in the sync service should add `byDay` explicitly. |
+| 10 | **Dart: JSCalendar yearly rules with `byMonthDay` and no `byMonth`** | the earlier Dart port expanded them *monthly* (e.g. every 15th) | the start month only, per RFC 8984 | also yearly + `byWeekNo` only: now only the start weekday (RFC 8984). That is very rare; JSCalendar producers should add `byDay` explicitly. |
 
-TS-only fixes that cannot change our current call sites (none of them uses
-these features), but matter for future ones:
+TS-only fixes that matter only to callers using these features:
 - `DTSTART;VALUE=DATE` (rrule.js used "now");
 - years 0–99 and pre-1970 milliseconds;
 - `rrulestr(..., {dtstart})` for sets;
@@ -47,26 +46,23 @@ What does **not** change:
 - `TZID=UTC` and floating rules;
 - text (`toText`/`parseText`) and string output (`toString`).
 
-`packages/ts/test/api-compat.test.ts` checks the call shapes our repos use
-against upstream.
+`packages/ts/test/api-compat.test.ts` checks the common call shapes against
+upstream.
 
 One behaviour change concerns time zones, not rules. A TZID other than UTC
 used to be converted with `Intl`; it is now returned as floating unless an
-adapter is installed. No Morgen code passes such a TZID to rrule.js: every
-`rrulestr` call builds `DTSTART;TZID=UTC:` or a TZID-less DTSTART. Check for
-`TZID=` in any new call site.
+adapter is installed. Callers that build `DTSTART;TZID=UTC:` or a TZID-less
+DTSTART are unaffected; any other TZID needs an adapter.
 
-## Required before rollout
+## Before switching from rrule.js
 
 Invalid rules now **throw** from `rrulestr`/`new RRule` (shape 6) where
 rrule.js returned odd dates or hung. rrule.js already threw on some input
-(unknown properties, `BYSETPOS=0`), but the set is now larger. None of the
-current `expandEventRecurrence` call sites catches per event: for example
-`events.forEach(event => expandEventRecurrence(event, …))` in the backend's
-feed adapter, or the desktop `EventCollection`. One malformed rule in a user's
-ICS feed could therefore abort the whole batch.
+(unknown properties, `BYSETPOS=0`), but the set is now larger. A caller that
+expands a batch of events without catching per event could abort the whole
+batch on one malformed rule in an ICS feed.
 
-Before switching a repository, wrap each event's expansion in `try/catch`
+Before switching, wrap each event's expansion in `try/catch`
 and treat a throwing rule as non-recurring (or skip it), logging the rule
 shape, not the rule.
 
@@ -93,15 +89,12 @@ Total: 703 of 6,588 cases differ.
 
 ## How to count affected events in production
 
-Events are not stored centrally. Desktop and Kai keep them in their local
-databases, and the backend and sync service expand provider events on the fly
-(`recurrenceExpand.ts`, called from the feed/DAV adapters). So count where
-expansion happens. Two complementary ways:
+Count where expansion happens. Two complementary ways:
 
 ### 1. Shadow mode (exact, recommended)
 
-Before switching, ship a release in which `expandEventRecurrence` (backend,
-sync service and desktop) also runs `@morgen-so/rrule` next to `rrule`. For a
+Before switching, ship a release in which the expansion code also runs
+`@morgen-so/rrule` next to `rrule`. For a
 sample of calls (say 1%, and always for rules matching the regexes below),
 compare the occurrence lists. When they differ, emit a metric or a Sentry
 breadcrumb with:
@@ -119,7 +112,7 @@ Time each library too: that also measures the performance win in the field.
 
 Rule strings carry no personal data, but the export must still be approved
 like any production data access. Export distinct `(DTSTART, RRULE)` pairs, for
-example from the sync service's event cache or a desktop debug export. Write
+example from an event cache or a debug export. Write
 one JSON object per line, `{"dtstart":"2024-01-01T09:00:00","rrule":"FREQ=..."}`,
 and run:
 

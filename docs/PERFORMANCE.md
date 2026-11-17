@@ -5,7 +5,7 @@ on Node 22.23; the TS benchmark ran alongside another job, so absolute times
 are slightly pessimistic. Dart runs as an AOT executable (Dart 3.13.7), as in
 the app.
 
-"Expand" means what `recurrenceExpand.ts` does for each event: `rrulestr` with
+"Expand" means the typical event expansion: `rrulestr` with
 a `DTSTART;TZID=UTC` line, then `between(dtstart − 2 days, dtstart + window,
 true)`.
 
@@ -19,7 +19,7 @@ cd packages/ts && npm run bench
 cd packages/dart && dart compile exe bench/bench.dart -o /tmp/bench && /tmp/bench
 ```
 
-| workload | rrule.js 2.8.0 | **@morgen-so/rrule** | speedup | Dart port as copied from mobile | **morgen_rrule** |
+| workload | rrule.js 2.8.0 | **@morgen-so/rrule** | speedup | earlier Dart port | **morgen_rrule** |
 |---|---:|---:|---:|---:|---:|
 | 3,722 random corpus rules, 1-year window (192,641 occurrences) | 12,931 ms | 79 ms | 165× | 112 ms | 71 ms |
 | same, 3-year window (411,569 occurrences) | 19,704 ms | 140 ms | 141× | 194 ms | 123 ms |
@@ -74,7 +74,7 @@ measured on an idle machine:
   progress guard, the whole first week for WEEKLY rules). For example, weekly
   MO,WE,FR takes 173 ms (was 162 ms), daily 350 ms (was 323 ms), and the
   random corpus over 1 year 76 ms (was 72 ms). It is still faster than the
-  port previously in the mobile app.
+  earlier Dart port.
 
 The new BYWEEKNO mask, built from the definition, walks week by week, so it
 costs about the same as the old, incorrect one.

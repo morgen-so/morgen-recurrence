@@ -1,4 +1,4 @@
-// Focused tests of the Dart port (copied from the mobile app).
+// Focused tests of the Dart port.
 // The shared conformance fixtures run in conformance_test.dart.
 //
 import 'dart:convert';
