@@ -9,6 +9,9 @@
     "url": "git+https://github.com/morgen-so/morgen-recurrence.git",
     "directory": "packages/ts"
   },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
   "main": "dist/cjs/index.js",
   "module": "dist/esm/index.js",
   "types": "dist/esm/index.d.ts",
@@ -31,7 +34,8 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "TZ=UTC jest",
     "conformance": "TZ=UTC jest test/conformance.test.ts",
-    "bench": "npm run build && node bench/bench.mjs"
+    "bench": "npm run build && node bench/bench.mjs",
+    "prepublishOnly": "npm run build"
   },
   "devDependencies": {
     "@types/jest": "^29.5.8",

@@ -1,0 +1,52 @@
+name: Publish @morgen-so/rrule
+
+# Publish packages/ts to GitHub Packages when a version tag is pushed:
+#   cd packages/ts && npm version <x.y.z-morgen.N> --no-git-tag-version
+#   git commit -am "..." && git tag ts-v<x.y.z-morgen.N> && git push && git push --tags
+on:
+  push:
+    tags:
+      - 'ts-v*'
+
+jobs:
+  publish:
+    name: Publish to GitHub Packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    defaults:
+      run:
+        working-directory: packages/ts
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: packages/ts/package-lock.json
+          registry-url: https://npm.pkg.github.com
+          scope: '@morgen-so'
+      - run: npm ci
+      - name: Check tag matches package version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF_NAME#ts-v}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PKG_VERSION" >&2
+            exit 1
+          fi
+      - run: npm run typecheck
+      - run: npm test
+      # prepublishOnly runs the build.
+      - name: Publish
+        run: npm publish --tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Consumers pin this tarball; the resolved URL and integrity go into
+      # their package-lock.json.
+      - name: Print dist metadata
+        run: npm view "@morgen-so/rrule@${GITHUB_REF_NAME#ts-v}" dist --json
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
