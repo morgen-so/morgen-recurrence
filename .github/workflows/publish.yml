@@ -38,8 +38,10 @@ jobs:
             exit 1
           fi
       - run: npm run typecheck
+      # Some tests run against dist.
+      - run: npm run build
       - run: npm test
-      # prepublishOnly runs the build.
+      # prepublishOnly rebuilds before publishing.
       - name: Publish
         run: npm publish --tag latest
         env:
