@@ -67,7 +67,7 @@ String _normalJs(Map<String, dynamic> rule) {
 
 Map<String, dynamic>? _tryJs(String rrule) {
   try {
-    return rruleToJsCalendar(rrule);
+    return rruleToJsCalendar(rrule, strict: true);
   } on FormatException {
     return null;
   }
@@ -134,11 +134,13 @@ void main() {
 
         // INTERVAL=0 has no JSCalendar form (RFC 8984: interval >= 1).
         if (RegExp(r'INTERVAL=0(;|$)').hasMatch(rrule)) {
-          expect(() => rruleToJsCalendar(rrule), throwsFormatException, reason: rrule);
+          expect(() => rruleToJsCalendar(rrule, strict: true), throwsFormatException,
+              reason: rrule);
         } else {
           conversion(
               'rrule->jscal->rrule',
-              () => RRuleOptions.parse(jsCalendarToRRule(rruleToJsCalendar(rrule)),
+              () => RRuleOptions.parse(
+                  jsCalendarToRRule(rruleToJsCalendar(rrule, strict: true)!, strict: true)!,
                   dtstart: dtstart));
           // Yearly BYMONTHDAY with an nth BYDAY and no BYMONTH has no
           // meaning-keeping form (see rruleMeaningInJsCalendar).
@@ -157,8 +159,23 @@ void main() {
             conversion(
                 'rrule->jscal keepRRuleMeaning',
                 () => RRuleOptions.fromJsCalendar(
-                    rruleToJsCalendar(rrule, keepRRuleMeaning: true), dtstart)!);
+                    rruleToJsCalendar(rrule, keepRRuleMeaning: true, strict: true)!, dtstart)!);
           }
+        }
+        // Lenient (the default) gives the strict result wherever strict
+        // succeeds, and never throws.
+        final strictJs = _tryJs(rrule);
+        final lenientJs = (() {
+          try {
+            return rruleToJsCalendar(rrule);
+          } catch (e) {
+            return {'threw': '$e'};
+          }
+        })();
+        if (strictJs != null && jsonEncode(lenientJs) != jsonEncode(strictJs) ||
+            lenientJs != null && lenientJs.containsKey('threw')) {
+          failures.add('${c['id']} (rrule->jscal lenient) $rrule\n'
+              '  strict  ${jsonEncode(strictJs)}\n  lenient ${jsonEncode(lenientJs)}');
         }
         final js = c['jscal'] as Map<String, dynamic>?;
         if (js != null) {
@@ -172,14 +189,18 @@ void main() {
           // occurrences; a literal JSCalendar -> RRULE -> JSCalendar keeps the rule.
           final gotJsRRule = jsonEncode(_evaluate(
               () => RRuleOptions.parse(
-                  jsCalendarToRRule(js, start: dtstart, keepJsCalendarMeaning: true),
+                  jsCalendarToRRule(js, start: dtstart, keepJsCalendarMeaning: true, strict: true)!,
                   dtstart: dtstart),
               q));
           if (gotJsRRule != expectedJs) {
             failures.add('${c['id']} (jscal->rrule keepJsCalendarMeaning) ${jsonEncode(js)}\n'
                 '  expected $expectedJs\n  got      $gotJsRRule');
           }
-          final back = _normalJs(rruleToJsCalendar(jsCalendarToRRule(js)));
+          final back =
+              _normalJs(rruleToJsCalendar(jsCalendarToRRule(js, strict: true)!, strict: true)!);
+          if (jsCalendarToRRule(js) != jsCalendarToRRule(js, strict: true)) {
+            failures.add('${c['id']} (jscal->rrule lenient) ${jsonEncode(js)}');
+          }
           if (back != _normalJs(js)) {
             failures.add('${c['id']} (jscal->rrule->jscal) ${jsonEncode(js)}\n  got ${back}');
           }

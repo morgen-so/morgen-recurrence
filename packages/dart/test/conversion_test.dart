@@ -31,8 +31,10 @@ DateTime _local(String s) => DateTime.parse('${s}Z');
 
 String _fmt(DateTime d) => d.toIso8601String().substring(0, 19);
 
-Object? _run(Map<String, dynamic> c) {
+Object? _run(Map<String, dynamic> c, List<String> warnings) {
   final o = (c['options'] as Map<String, dynamic>?) ?? const {};
+  final strict = o['strict'] == true;
+  void warn(String m) => warnings.add(m);
   final offsets = (o['offsets'] as Map<String, dynamic>?) ?? const {};
   final zone = o['eventTimeZone'] as String?;
   DateTime toEventTime(DateTime wall, String tz) =>
@@ -45,22 +47,56 @@ Object? _run(Map<String, dynamic> c) {
     case 'rruleToJsCalendar':
       return rruleToJsCalendar(input as String,
           toEventTime: zone == null ? null : toEventTime,
-          keepRRuleMeaning: o['keepRRuleMeaning'] == true);
+          keepRRuleMeaning: o['keepRRuleMeaning'] == true,
+          alwaysSetInterval: o['alwaysSetInterval'] == true,
+          strict: strict,
+          onWarning: warn);
     case 'jsCalendarToRRule':
       return jsCalendarToRRule((input as Map).cast<String, Object?>(),
           untilForm: form(o['untilForm'] as String?),
           toUtc: zone == null ? null : toUtc,
+          toEventTime: zone == null ? null : toEventTime,
           start: o['start'] == null ? null : _local(o['start'] as String),
-          keepJsCalendarMeaning: o['keepJsCalendarMeaning'] == true);
+          keepJsCalendarMeaning: o['keepJsCalendarMeaning'] == true,
+          strict: strict,
+          onWarning: warn);
     case 'recurrenceOverridesFromICal':
       return recurrenceOverridesFromICal((input as List).cast<String>(),
-          toEventTime: zone == null ? null : toEventTime);
+          toEventTime: zone == null ? null : toEventTime, strict: strict, onWarning: warn);
     case 'recurrenceOverridesToICal':
       final occurrences = (o['occurrences'] as List?)?.cast<String>().toSet();
       final r = recurrenceOverridesToICal((input as Map).cast<String, Object?>(),
           form: form(o['form'] as String?),
           timeZone: o['timeZone'] as String?,
-          isOccurrence: occurrences == null ? null : (id) => occurrences.contains(_fmt(id)));
+          isOccurrence: occurrences == null ? null : (id) => occurrences.contains(_fmt(id)),
+          strict: strict,
+          onWarning: warn);
+      return {'properties': r.properties, 'overrides': r.overrides};
+    case 'recurrenceFromICal':
+      final r = recurrenceFromICal((input as List).cast<String>(),
+          toEventTime: zone == null ? null : toEventTime,
+          keepRRuleMeaning: o['keepRRuleMeaning'] == true,
+          alwaysSetInterval: o['alwaysSetInterval'] == true,
+          strict: strict,
+          onWarning: warn);
+      return {
+        'recurrenceRules': r.recurrenceRules,
+        'excludedRecurrenceRules': r.excludedRecurrenceRules,
+        'recurrenceOverrides': r.recurrenceOverrides,
+      };
+    case 'recurrenceToICal':
+      final i = input as Map<String, dynamic>;
+      final r = recurrenceToICal(
+          recurrenceRules: (i['recurrenceRules'] as List?)?.cast<Map<String, Object?>>(),
+          excludedRecurrenceRules:
+              (i['excludedRecurrenceRules'] as List?)?.cast<Map<String, Object?>>(),
+          recurrenceOverrides: (i['recurrenceOverrides'] as Map?)?.cast<String, Object?>(),
+          form: form(o['form'] as String?),
+          timeZone: o['timeZone'] as String?,
+          toUtc: zone == null ? null : toUtc,
+          toEventTime: zone == null ? null : toEventTime,
+          strict: strict,
+          onWarning: warn);
       return {'properties': r.properties, 'overrides': r.overrides};
   }
   throw StateError('Unknown fn ${c['fn']}');
@@ -73,12 +109,17 @@ void main() {
   for (final c in cases) {
     test('${c['fn']}: ${c['id']}', () {
       Object? got;
+      final warnings = <String>[];
       try {
-        got = _run(c);
+        got = _run(c, warnings);
       } on FormatException {
         got = {'error': true};
       }
       expect(_canonical(got), _canonical(c['expected']));
+      if (got is! Map || got['error'] != true) {
+        final expectedWarnings = (c['options'] as Map?)?['warnings'] ?? 0;
+        expect(warnings.length, expectedWarnings, reason: warnings.join('\n'));
+      }
     });
   }
 

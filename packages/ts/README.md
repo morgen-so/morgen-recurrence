@@ -13,8 +13,10 @@ rule.between(new Date('2024-01-01'), new Date('2024-03-01'), true)
 ```
 
 It also converts recurrence to and from JSCalendar (RFC 8984):
+`recurrenceFromICal` / `recurrenceToICal` for a whole recurrence, and
 `rruleToJsCalendar`, `jsCalendarToRRule`, `recurrenceOverridesFromICal` and
-`recurrenceOverridesToICal`. See
+`recurrenceOverridesToICal` for its parts. They are lenient by default
+(problems go to `onWarning`; `strict: true` throws). See
 [JSCalendar conversion](../../README.md#jscalendar-conversion).
 
 All of rrule.js's documentation applies, with the differences below. Bugs 1–5

@@ -9,11 +9,15 @@ export 'src/jscalendar.dart'
     show
         ICalDateForm,
         ICalRecurrenceDates,
+        JsCalendarRecurrence,
+        OnWarning,
         ToEventTime,
         ToUtc,
         jsCalendarToRRule,
+        recurrenceFromICal,
         recurrenceOverridesFromICal,
         recurrenceOverridesToICal,
+        recurrenceToICal,
         rruleMeaningInJsCalendar,
         rruleToJsCalendar;
 export 'src/rrule.dart';

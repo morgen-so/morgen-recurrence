@@ -24,6 +24,8 @@ export {
   jsCalendarToRRule,
   recurrenceOverridesFromICal,
   recurrenceOverridesToICal,
+  recurrenceFromICal,
+  recurrenceToICal,
 } from './jscalendar'
 export type {
   ICalDateForm,
@@ -32,7 +34,11 @@ export type {
   JSCalendarFrequency,
   JSCalendarNDay,
   JSCalendarPatch,
+  JSCalendarRecurrence,
   JSCalendarRecurrenceRule,
+  OnWarning,
+  RecurrenceFromICalOptions,
+  RecurrenceToICalOptions,
   JsCalendarToRRuleOptions,
   RecurrenceOverridesFromICalOptions,
   RecurrenceOverridesToICalOptions,

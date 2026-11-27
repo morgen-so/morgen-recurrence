@@ -8,8 +8,10 @@ import {
   ICalDateForm,
   jsCalendarToRRule,
   JSCalendarRecurrenceRule,
+  recurrenceFromICal,
   recurrenceOverridesFromICal,
   recurrenceOverridesToICal,
+  recurrenceToICal,
   rruleToJsCalendar,
 } from '../src/index'
 
@@ -37,8 +39,10 @@ const offsetMs = (offsets: Record<string, string>, zone: string) => {
 }
 const fmt = (d: Date) => d.toISOString().slice(0, 19)
 
-function run(c: ConversionCase): unknown {
+function run(c: ConversionCase, warnings: string[]): unknown {
   const o = c.options ?? {}
+  const strict = o.strict === true
+  const onWarning = (m: string) => warnings.push(m)
   const offsets = (o.offsets as Record<string, string>) ?? {}
   const zone = o.eventTimeZone as string | undefined
   const toEventTime = zone
@@ -50,24 +54,49 @@ function run(c: ConversionCase): unknown {
       return rruleToJsCalendar(c.input as string, {
         toEventTime,
         keepRRuleMeaning: o.keepRRuleMeaning === true,
+        alwaysSetInterval: o.alwaysSetInterval === true,
+        strict,
+        onWarning,
       })
     case 'jsCalendarToRRule':
       return jsCalendarToRRule(c.input as JSCalendarRecurrenceRule, {
         untilForm: o.untilForm as ICalDateForm,
         toUtc,
+        toEventTime,
         start: o.start ? new Date(`${o.start}Z`) : undefined,
         keepJsCalendarMeaning: o.keepJsCalendarMeaning === true,
+        strict,
+        onWarning,
       })
     case 'recurrenceOverridesFromICal':
-      return recurrenceOverridesFromICal(c.input as string[], { toEventTime })
+      return recurrenceOverridesFromICal(c.input as string[], { toEventTime, strict, onWarning })
     case 'recurrenceOverridesToICal': {
       const occurrences = o.occurrences ? new Set(o.occurrences as string[]) : undefined
       return recurrenceOverridesToICal(c.input as Record<string, unknown>, {
         form: o.form as ICalDateForm,
         timeZone: o.timeZone as string,
         isOccurrence: occurrences ? (id) => occurrences.has(fmt(id)) : undefined,
+        strict,
+        onWarning,
       })
     }
+    case 'recurrenceFromICal':
+      return recurrenceFromICal(c.input as string[], {
+        toEventTime,
+        keepRRuleMeaning: o.keepRRuleMeaning === true,
+        alwaysSetInterval: o.alwaysSetInterval === true,
+        strict,
+        onWarning,
+      })
+    case 'recurrenceToICal':
+      return recurrenceToICal(c.input as Parameters<typeof recurrenceToICal>[0], {
+        form: o.form as ICalDateForm,
+        timeZone: o.timeZone as string,
+        toUtc,
+        toEventTime,
+        strict,
+        onWarning,
+      })
   }
   throw new Error(`Unknown fn ${c.fn}`)
 }
@@ -78,13 +107,17 @@ describe('JSCalendar conversion fixtures', () => {
   for (const c of cases) {
     it(`${c.fn}: ${c.id}`, () => {
       let got: unknown
+      const warnings: string[] = []
       try {
-        got = run(c)
+        got = run(c, warnings)
       } catch (e) {
         if (e instanceof TypeError) throw e
         got = { error: true }
       }
       expect(canonical(got)).toBe(canonical(c.expected))
+      if (canonical(got) !== canonical({ error: true })) {
+        expect({ id: c.id, warnings: warnings.length }).toEqual({ id: c.id, warnings: (c.options?.warnings as number) ?? 0 })
+      }
     })
   }
 

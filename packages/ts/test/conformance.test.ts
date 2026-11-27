@@ -71,7 +71,7 @@ function normalJs(rule: JSCalendarRecurrenceRule): string {
 
 const tryJs = (rrule: string) => {
   try {
-    return rruleToJsCalendar(rrule)
+    return rruleToJsCalendar(rrule, { strict: true })
   } catch {
     return null
   }
@@ -118,32 +118,52 @@ describe('conformance fixtures', () => {
         // conformance test). INTERVAL=0 has no JSCalendar form.
         const start = parse(c.dtstart)
         if (/INTERVAL=0(;|$)/.test(c.rrule)) {
-          expect(() => rruleToJsCalendar(c.rrule)).toThrow()
+          expect(() => rruleToJsCalendar(c.rrule, { strict: true })).toThrow()
         } else {
-          check('rrule->jscal->rrule', evaluate(c, () => jsCalendarToRRule(rruleToJsCalendar(c.rrule))))
+          check(
+            'rrule->jscal->rrule',
+            evaluate(c, () => jsCalendarToRRule(rruleToJsCalendar(c.rrule, { strict: true }), { strict: true }))
+          )
           // keepRRuleMeaning, evaluated as JSCalendar (keepJsCalendarMeaning).
           if (unkeepable(tryJs(c.rrule))) withoutForm++
           else {
             check(
               'rrule->jscal keepRRuleMeaning',
               evaluate(c, () =>
-                jsCalendarToRRule(rruleToJsCalendar(c.rrule, { keepRRuleMeaning: true }), {
+                jsCalendarToRRule(rruleToJsCalendar(c.rrule, { keepRRuleMeaning: true, strict: true }), {
                   start,
                   keepJsCalendarMeaning: true,
+                  strict: true,
                 })
               )
             )
           }
+        }
+        // Lenient (the default) gives the strict result wherever strict
+        // succeeds, and never throws.
+        const strictJs = tryJs(c.rrule)
+        let lenientJs: unknown
+        try {
+          lenientJs = rruleToJsCalendar(c.rrule)
+        } catch (e) {
+          lenientJs = { threw: String(e) }
+        }
+        if ((strictJs && JSON.stringify(lenientJs) !== JSON.stringify(strictJs)) ||
+            (lenientJs && typeof lenientJs === 'object' && 'threw' in lenientJs)) {
+          failures.push(`${c.id} (rrule->jscal lenient) ${c.rrule}\n  strict  ${JSON.stringify(strictJs)}\n  lenient ${JSON.stringify(lenientJs)}`)
         }
         if (c.jscal) {
           jscal++
           const expectedJs = c.jscalExpected !== undefined ? c.jscalExpected : c.expected
           check(
             'jscal->rrule keepJsCalendarMeaning',
-            evaluate(c, () => jsCalendarToRRule(c.jscal, { start, keepJsCalendarMeaning: true })),
+            evaluate(c, () => jsCalendarToRRule(c.jscal, { start, keepJsCalendarMeaning: true, strict: true })),
             expectedJs
           )
-          const back = normalJs(rruleToJsCalendar(jsCalendarToRRule(c.jscal)))
+          const back = normalJs(rruleToJsCalendar(jsCalendarToRRule(c.jscal, { strict: true }), { strict: true }))
+          if (jsCalendarToRRule(c.jscal) !== jsCalendarToRRule(c.jscal, { strict: true })) {
+            failures.push(`${c.id} (jscal->rrule lenient) ${JSON.stringify(c.jscal)}`)
+          }
           if (back !== normalJs(c.jscal)) failures.push(`${c.id} (jscal->rrule->jscal) ${JSON.stringify(c.jscal)}\n  got ${back}`)
         }
       }

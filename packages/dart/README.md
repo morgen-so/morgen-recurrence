@@ -19,9 +19,12 @@ RRuleOptions.fromJsCalendar(jsCalendarRule, dtstart);   // JSCalendar (RFC 8984)
 rruleToJsCalendar('FREQ=WEEKLY;BYDAY=MO');               // RRULE -> RecurrenceRule
 jsCalendarToRRule({'frequency': 'weekly'});              // RecurrenceRule -> RRULE
 recurrenceOverridesFromICal(['EXDATE:20240102T090000']);  // EXDATE/RDATE <-> overrides
+recurrenceFromICal(googleEvent.recurrence, toEventTime: ...); // a whole recurrence
 ```
 
-The JSCalendar conversion follows draft-ietf-calext-jscalendar-icalendar; see
+The JSCalendar conversion follows draft-ietf-calext-jscalendar-icalendar. It is
+lenient by default: problems go to `onWarning`, or throw a `FormatException`
+with `strict: true`. See
 [JSCalendar conversion](../../README.md#jscalendar-conversion).
 
 Times are **floating**: `DateTime`s with `isUtc: true` whose fields hold the
