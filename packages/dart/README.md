@@ -13,12 +13,19 @@ final rule = RRule(RRuleOptions.parse('FREQ=MONTHLY;BYDAY=2WE,SA;COUNT=6',
 rule.all();                                   // List<DateTime>
 rule.between(from, to);                       // lazy Iterable, inclusive by default
 rule.after(dt); rule.before(dt);
+RRule.fromString('DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=3');
+RRuleOptions.parseString('RRULE:FREQ=WEEKLY', dtstart: start); // rrule.js parseString
 RRuleOptions.fromJsCalendar(jsCalendarRule, dtstart);   // JSCalendar (RFC 8984)
 ```
 
 Times are **floating**: `DateTime`s with `isUtc: true` whose fields hold the
 wall clock. Non-UTC inputs are read by their fields. There is no time zone
 support by design: convert the results with your own time zone data.
+
+`RRuleOptions.parseString` and `RRule.fromString` read a rule line, a DTSTART
+line (`TZID` and `VALUE` in any order) or both, like rrule.js `parseString`.
+DTSTART is floating and TZID is ignored. Unlike rrule.js, CRLF line endings
+work, and a string without DTSTART needs `dtstart:` instead of starting "now".
 
 Supported beyond rrule.js:
 - SKIP (RFC 7529 `RSCALE=GREGORIAN;SKIP=…` in `RRuleOptions.parse`; JSCalendar

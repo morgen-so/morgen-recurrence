@@ -540,4 +540,107 @@ void main() {
       }
     }
   });
+
+  // Ported from packages/ts/test/parsestring.test.ts and review-fixes R02.
+  group('parseString / RRule.fromString', () {
+    List<String> strAll(String s, {DateTime? dtstart}) =>
+        RRule.fromString(s, dtstart: dtstart).all(limit: 10).map(_fmt).toList();
+
+    test('a single rule line, with or without RRULE:', () {
+      final o = RRuleOptions.parseString('FREQ=WEEKLY;UNTIL=20100101T000000Z',
+          dtstart: _d('2009-12-20T09:00:00'));
+      expect(o.freq, RRuleFrequency.weekly);
+      expect(o.until, _d('2010-01-01T00:00:00'));
+      // A date UNTIL is read as midnight.
+      expect(
+          RRuleOptions.parseString('RRULE:FREQ=WEEKLY;UNTIL=20100101',
+                  dtstart: _d('2009-12-20T00:00:00'))
+              .until,
+          _d('2010-01-01T00:00:00'));
+    });
+
+    test('DTSTART then RRULE', () {
+      expect(strAll('DTSTART:19970902T090000Z\nRRULE:FREQ=YEARLY;COUNT=3\n'),
+          ['1997-09-02T09:00:00', '1998-09-02T09:00:00', '1999-09-02T09:00:00']);
+      final o = RRuleOptions.parseString(
+          'DTSTART;TZID=America/New_York:19970902T090000\nRRULE:FREQ=WEEKLY;UNTIL=20100101T000000Z');
+      expect(o.dtstart, _d('1997-09-02T09:00:00'));
+      expect(o.until, _d('2010-01-01T00:00:00'));
+    });
+
+    test('a DTSTART line alone is a yearly rule (rrule.js default FREQ)', () {
+      final o = RRuleOptions.parseString('DTSTART;TZID=America/New_York:19970902T090000');
+      expect(o.freq, RRuleFrequency.yearly);
+      expect(o.dtstart, _d('1997-09-02T09:00:00'));
+    });
+
+    test('legacy DTSTART inside the rule line', () {
+      for (final s in [
+        'RRULE:FREQ=WEEKLY;DTSTART;TZID=America/New_York:19970902T090000',
+        'RRULE:FREQ=WEEKLY;DTSTART=19970902T090000Z',
+        'FREQ=WEEKLY;DTSTART=19970902T090000;TZID=America/New_York',
+      ]) {
+        final o = RRuleOptions.parseString(s);
+        expect(o.freq, RRuleFrequency.weekly, reason: s);
+        expect(o.dtstart, _d('1997-09-02T09:00:00'), reason: s);
+      }
+      expect(
+          RRuleOptions.parseString('RRULE:DTSTART;TZID=America/New_York:19970902T090000').dtstart,
+          _d('1997-09-02T09:00:00'));
+    });
+
+    test('DTSTART parameters in any order (R02)', () {
+      expect(strAll('DTSTART;VALUE=DATE:20240101\nRRULE:FREQ=DAILY;COUNT=2'),
+          ['2024-01-01T00:00:00', '2024-01-02T00:00:00']);
+      for (final s in [
+        'DTSTART;VALUE=DATE-TIME;TZID=UTC:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1',
+        'DTSTART;TZID=UTC;VALUE=DATE-TIME:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1',
+        'DTSTART;TZID="Europe/Zurich":20240101T090000\nRRULE:FREQ=DAILY;COUNT=1',
+      ]) {
+        expect(strAll(s), ['2024-01-01T09:00:00'], reason: s);
+      }
+    });
+
+    test('the string DTSTART wins over dtstart; dtstart fills in', () {
+      expect(
+          strAll('DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1',
+              dtstart: _d('2030-01-01T00:00:00')),
+          ['2024-01-01T09:00:00']);
+      expect(strAll('RRULE:FREQ=DAILY;COUNT=2', dtstart: _d('2024-03-01T10:00:00')),
+          ['2024-03-01T10:00:00', '2024-03-02T10:00:00']);
+    });
+
+    test('CRLF line endings and blank lines', () {
+      expect(strAll('\r\nDTSTART:20240101T090000\r\n\r\nRRULE:FREQ=DAILY;COUNT=2\r\n'),
+          ['2024-01-01T09:00:00', '2024-01-02T09:00:00']);
+    });
+
+    test('a second rule line overrides the first one property by property', () {
+      final o = RRuleOptions.parseString('RRULE:FREQ=DAILY;COUNT=5\nRRULE:COUNT=2;BYWEEKDAY=MO',
+          dtstart: _d('2024-01-01T00:00:00'));
+      expect(o.freq, RRuleFrequency.daily);
+      expect(o.count, 2);
+      expect(o.byweekday, [RRuleWeekday.mo]);
+    });
+
+    test('rejects what rrule.js rejects', () {
+      final start = _d('2024-01-01T00:00:00');
+      for (final s in [
+        'DTSTART:2024-01-01\nRRULE:FREQ=DAILY;COUNT=1',
+        'DTSTART;VALUE=DATE:20240101T090000\nRRULE:FREQ=DAILY',
+        'DTSTART;VALUE=DATE-TIME:20240101\nRRULE:FREQ=DAILY',
+        'RRULE:FREQ=DAILY\nEXDATE:20240102T090000Z',
+        'RDATE:20240102T090000Z',
+        'RRULE:FREQ=FORTNIGHTLY',
+        'RRULE:FREQ=DAILY;COLOR=RED',
+        'RRULE:FREQ=DAILY;COUNT=X\nRRULE:COUNT=2',
+      ]) {
+        expect(() => RRuleOptions.parseString(s, dtstart: start), throwsFormatException, reason: s);
+      }
+      expect(() => RRuleOptions.parseString('RRULE:FREQ=DAILY'), throwsArgumentError);
+      // Range errors still come from RRule.
+      expect(() => RRule.fromString('RRULE:FREQ=MONTHLY;BYMONTHDAY=32', dtstart: start),
+          throwsArgumentError);
+    });
+  });
 }

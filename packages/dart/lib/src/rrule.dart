@@ -54,6 +54,12 @@ class RRule {
   /// Throws [ArgumentError] for invalid options (BYSETPOS 0 or beyond ±366).
   RRule(this.options, {this.maxPeriods = 200000}) : _parsed = parseOptions(options);
 
+  /// A rule from an iCalendar string such as
+  /// `DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=3` (rrule.js
+  /// `RRule.fromString`); see [RRuleOptions.parseString].
+  factory RRule.fromString(String s, {DateTime? dtstart, int maxPeriods = 200000}) =>
+      RRule(RRuleOptions.parseString(s, dtstart: dtstart), maxPeriods: maxPeriods);
+
   /// Occurrences in chronological order, lazily, up to [before] included.
   /// Without [before], the iteration is only bounded by COUNT, UNTIL and
   /// [maxPeriods].

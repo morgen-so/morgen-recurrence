@@ -2,8 +2,9 @@
 // directories listed in $FIXTURES, comma-separated). The TypeScript package
 // runs the same corpus in packages/ts/test/conformance.test.ts.
 //
-// Every case is evaluated from its RRULE string; cases that also carry a
-// JSCalendar rule (`jscal`) are evaluated through fromJsCalendar as well.
+// Every case is evaluated from its RRULE value (RRuleOptions.parse) and as a
+// `DTSTART:…\nRRULE:…` string (RRuleOptions.parseString); cases that also
+// carry a JSCalendar rule (`jscal`) are evaluated through fromJsCalendar too.
 import 'dart:convert';
 import 'dart:io';
 
@@ -79,6 +80,18 @@ void main() {
           failures.add('${c['id']} DTSTART=${c['dtstart']} ${c['rrule']}\n'
               '  expected $expected\n  got      $got');
         }
+        // The same rule as an iCalendar string, through parseString.
+        final start = c['dtstart'] as String;
+        final string = start.length == 19
+            ? 'DTSTART:${start.replaceAll(RegExp('[-:]'), '')}\nRRULE:${c['rrule']}'
+            : 'RRULE:${c['rrule']}';
+        final gotString = jsonEncode(_evaluate(
+            () => RRuleOptions.parseString(string, dtstart: start.length == 19 ? null : dtstart),
+            q));
+        if (gotString != expected) {
+          failures.add('${c['id']} (string) ${jsonEncode(string)}\n'
+              '  expected $expected\n  got      $gotString');
+        }
         final js = c['jscal'] as Map<String, dynamic>?;
         if (js != null) {
           jscal++;
@@ -95,7 +108,8 @@ void main() {
       }
       total += cases.length;
       jscalTotal += jscal;
-      print('$name: ${cases.length - failures.where((f) => !f.contains('(jscal)')).length}'
+      print(
+          '$name: ${cases.length - failures.where((f) => !f.contains('(jscal)') && !f.contains('(string)')).length}'
           '/${cases.length} pass, jscal ${jscal - failures.where((f) => f.contains('(jscal)')).length}'
           '/$jscal (running total $total + $jscalTotal jscal)');
       expect(failures.take(10).toList(), isEmpty);
