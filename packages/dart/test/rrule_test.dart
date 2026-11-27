@@ -601,13 +601,22 @@ void main() {
       }
     });
 
-    test('the string DTSTART wins over dtstart; dtstart fills in', () {
-      expect(
-          strAll('DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1',
-              dtstart: _d('2030-01-01T00:00:00')),
+    test('start precedence as in rrulestr: inline DTSTART, dtstart, DTSTART line', () {
+      final other = _d('2030-01-01T00:00:00');
+      expect(strAll('DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1', dtstart: other),
+          ['2030-01-01T00:00:00']);
+      expect(strAll('RRULE:FREQ=DAILY;COUNT=1;DTSTART=20240101T090000Z', dtstart: other),
           ['2024-01-01T09:00:00']);
+      expect(strAll('DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1'), ['2024-01-01T09:00:00']);
       expect(strAll('RRULE:FREQ=DAILY;COUNT=2', dtstart: _d('2024-03-01T10:00:00')),
           ['2024-03-01T10:00:00', '2024-03-02T10:00:00']);
+    });
+
+    test('quoted DTSTART parameters may contain ; and :', () {
+      expect(strAll('DTSTART;X-NOTE="a;b:c";TZID=UTC:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1'),
+          ['2024-01-01T09:00:00']);
+      expect(() => RRuleOptions.parseString('DTSTART;X-NOTE="a;b";VALUE=DATE:20240101T090000'),
+          throwsFormatException);
     });
 
     test('CRLF line endings and blank lines', () {
@@ -634,6 +643,14 @@ void main() {
         'RRULE:FREQ=FORTNIGHTLY',
         'RRULE:FREQ=DAILY;COLOR=RED',
         'RRULE:FREQ=DAILY;COUNT=X\nRRULE:COUNT=2',
+        // Every line is checked, even past the two that are used.
+        'DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=2\nEXDATE:20240102T090000',
+        'DTSTART:20240101T090000\nRRULE:FREQ=DAILY\nRRULE:FREQ=FORTNIGHTLY',
+        // A duplicate does not hide a malformed value.
+        'FREQ=DAILY;UNTIL=garbage;UNTIL=20240131',
+        // Impossible dates.
+        'DTSTART;VALUE=DATE:20240230\nRRULE:FREQ=DAILY',
+        'DTSTART:20240101T250000\nRRULE:FREQ=DAILY',
       ]) {
         expect(() => RRuleOptions.parseString(s, dtstart: start), throwsFormatException, reason: s);
       }
