@@ -232,6 +232,12 @@ class RRuleOptions {
               throw FormatException('Invalid number in RRULE: $p')
         ];
 
+    int one(String key, String v) {
+      final values = ints(v);
+      if (values.length != 1) throw FormatException('Invalid $key: $v');
+      return values.single;
+    }
+
     for (final attr in body.split(';')) {
       if (attr.isEmpty) continue;
       final eq = attr.indexOf('=');
@@ -242,9 +248,9 @@ class RRuleOptions {
           freq =
               _frequencies[value.toLowerCase()] ?? (throw FormatException('Invalid FREQ: $value'));
         case 'INTERVAL':
-          interval = ints(value).single;
+          interval = one(key, value);
         case 'COUNT':
-          count = ints(value).single;
+          count = one(key, value);
         case 'UNTIL':
           final m = RegExp(r'^(\d{4})(\d{2})(\d{2})(T(\d{2})(\d{2})(\d{2})Z?)?$').firstMatch(value);
           if (m == null) throw FormatException('Invalid UNTIL value: $value');
@@ -314,6 +320,142 @@ class RRuleOptions {
       bysecond: bysecond,
       skip: skip,
     );
+  }
+
+  /// Parses an iCalendar recurrence string, like rrule.js `RRule.parseString`
+  /// (parsestring.js): a bare RRULE value, an `RRULE:` or `EXRULE:` line, a
+  /// `DTSTART` line, or a `DTSTART` line followed by a rule line, for example
+  ///
+  /// ```text
+  /// DTSTART;TZID=Europe/Zurich:20240101T090000
+  /// RRULE:FREQ=WEEKLY;COUNT=3
+  /// ```
+  ///
+  /// DTSTART takes `TZID`, `VALUE` and other (ignored) parameters in any
+  /// order, quoted or not, and may also be written inside the rule line
+  /// (`RRULE:FREQ=DAILY;DTSTART=20240101T090000Z`, accepted by rrule.js for
+  /// backwards compatibility). Its value is read as a floating time, `Z` or
+  /// not. TZID is accepted and ignored: time zones are the caller's business.
+  ///
+  /// The start is, as in rrule.js `rrulestr`: a DTSTART inside the rule line,
+  /// else [dtstart], else a DTSTART line.
+  ///
+  /// Like rrule.js, every line is checked but only the first two non-empty
+  /// lines are used, and a rule property in the second overrides the same
+  /// property in the first.
+  ///
+  /// Throws [FormatException] for anything [parse] rejects, a malformed or
+  /// impossible DTSTART (`20240230`), or another property on any line
+  /// (`RDATE`, `EXDATE`: there is no RRuleSet). Throws [ArgumentError] when
+  /// there is no DTSTART at all.
+  ///
+  /// Differences from rrule.js:
+  ///  * Folded lines (a line break followed by a space or tab, RFC 5545
+  ///    section 3.1) are unfolded first, and lines are trimmed at both ends,
+  ///    so CRLF line endings work (rrule.js only strips the first match of
+  ///    `/^\s+|\s+$/`, keeping a trailing `\r` that then breaks the last
+  ///    value).
+  ///  * A DTSTART line must be a whole DTSTART: rrule.js reads
+  ///    `DTSTART:20240101 090000` as midnight.
+  ///  * Parameter names may contain digits (`X-SLOT2`): rrule.js then ignores
+  ///    the whole DTSTART.
+  ///  * An impossible DTSTART date is rejected (rrule.js moves 20240230 to
+  ///    March 1); second 60 (a leap second) is read as 59.
+  ///  * Without any DTSTART it throws instead of starting the rule "now".
+  static RRuleOptions parseString(String s, {DateTime? dtstart}) {
+    DateTime? inlineStart, lineStart;
+    final merged = <String, String>{};
+    // RFC 5545 section 3.1: a line break followed by a space or tab continues
+    // the previous line.
+    final lines = [
+      for (final line in s.replaceAll(RegExp(r'\r?\n[ \t]'), '').split('\n'))
+        if (line.trim().isNotEmpty) line.trim()
+    ];
+    for (final (index, line) in lines.indexed) {
+      final header = RegExp(r'^([A-Z]+?)[:;]').firstMatch(line.toUpperCase())?.group(1);
+      switch (header) {
+        case null || 'RRULE' || 'EXRULE':
+          var body = line.replaceFirst(RegExp(r'^(?:RRULE|EXRULE):', caseSensitive: false), '');
+          final inline = _dtstartPattern.firstMatch(body);
+          DateTime? start;
+          if (inline != null) {
+            start = _parseDtstart(inline);
+            body = body.replaceRange(inline.start, inline.end, '');
+          }
+          // The parts as written, so that parse() sees every value, even one
+          // that a later duplicate overrides (rrule.js parses them all).
+          final attrs = [
+            for (final attr in body.split(';'))
+              if (attr.isNotEmpty && !attr.toUpperCase().startsWith('TZID='))
+                attr.toUpperCase().startsWith('BYWEEKDAY=') ? 'BYDAY${attr.substring(9)}' : attr
+          ];
+          parse(attrs.join(';'), dtstart: DateTime.utc(2000));
+          if (index >= 2) continue;
+          if (start != null) inlineStart = start;
+          for (final attr in attrs) {
+            final eq = attr.indexOf('=');
+            merged[attr.substring(0, eq).toUpperCase()] = attr.substring(eq + 1);
+          }
+        case 'DTSTART':
+          final m = _dtstartPattern.firstMatch(line);
+          if (m == null || m.start != 0 || m.end != line.length) {
+            throw FormatException('Invalid DTSTART: $line');
+          }
+          final start = _parseDtstart(m);
+          if (index < 2) lineStart = start;
+        default:
+          throw FormatException('Unsupported RFC prop $header in $line');
+      }
+    }
+    final begin = inlineStart ?? dtstart ?? lineStart;
+    if (begin == null) throw ArgumentError('No DTSTART in the string and no dtstart given');
+    return parse([for (final e in merged.entries) '${e.key}=${e.value}'].join(';'), dtstart: begin);
+  }
+
+  // parsestring.js parseDtstart: `DTSTART` at the start of the line or after
+  // a `;`, parameters in any order, then `:` or `=` and the value. A
+  // parameter value is a comma-separated list of quoted (which may contain
+  // `;` `:` `,`) or plain values (RFC 5545 section 3.1).
+  static final _dtstartPattern = RegExp(
+      r'(?<=^|;)DTSTART((?:;[A-Z0-9-]+=(?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)*)'
+      r'(?::|=)([^;\s]*)',
+      caseSensitive: false);
+  static final _paramPattern = RegExp(
+      r';([A-Z0-9-]+)=((?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)',
+      caseSensitive: false);
+
+  static DateTime _parseDtstart(RegExpMatch m) {
+    final value = m.group(2)!;
+    String? valueType;
+    for (final param in _paramPattern.allMatches(m.group(1)!)) {
+      if (param.group(1)!.toUpperCase() == 'VALUE') {
+        valueType = param.group(2)!.replaceAll('"', '').toUpperCase();
+      }
+    }
+    if (valueType != null && valueType != 'DATE' && valueType != 'DATE-TIME') {
+      throw FormatException('Unsupported DTSTART;VALUE=$valueType');
+    }
+    if (valueType == 'DATE' && !RegExp(r'^\d{8}$').hasMatch(value)) {
+      throw FormatException('Invalid DTSTART;VALUE=DATE value: $value');
+    }
+    if (valueType == 'DATE-TIME' && !RegExp(r'^\d{8}T\d{6}Z?$').hasMatch(value)) {
+      throw FormatException('Invalid DTSTART;VALUE=DATE-TIME value: $value');
+    }
+    final d = RegExp(r'^(\d{4})(\d{2})(\d{2})(T(\d{2})(\d{2})(\d{2})Z?)?$').firstMatch(value);
+    if (d == null) throw FormatException('Invalid DTSTART value: $value');
+    int g(int i) => int.parse(d.group(i) ?? '0');
+    // RFC 5545 section 3.3.5: without leap second support, second 60 is 59.
+    final second = g(7) == 60 ? 59 : g(7);
+    final start = DateTime.utc(g(1), g(2), g(3), g(5), g(6), second);
+    if (start.year != g(1) ||
+        start.month != g(2) ||
+        start.day != g(3) ||
+        start.hour != g(5) ||
+        start.minute != g(6) ||
+        start.second != second) {
+      throw FormatException('Impossible DTSTART value: $value');
+    }
+    return start;
   }
 
   /// LocalDateTime ("2024-01-31T09:00:00"); a trailing "Z" or a date-only

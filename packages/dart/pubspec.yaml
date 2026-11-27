@@ -2,7 +2,7 @@ name: morgen_rrule
 description: >-
   RFC 5545 recurrence rule expansion, a port of the rrule.js 2.8.0 core with
   Morgen's fixes. Conformance-tested against the same fixtures as @morgen-so/rrule.
-version: 1.0.0
+version: 1.0.1
 publish_to: none
 repository: https://github.com/morgen-so/morgen-recurrence
 
