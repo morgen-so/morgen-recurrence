@@ -26,9 +26,12 @@ support by design: convert the results with your own time zone data.
 line (parameters in any order, quoted or not) or both, like rrule.js
 `parseString`. Every line is checked; only the first two are used. DTSTART is
 floating and TZID is ignored. The start is the DTSTART inside the rule line,
-else `dtstart:`, else the DTSTART line (rrule.js `rrulestr`). Unlike rrule.js,
-CRLF line endings work, an impossible DTSTART date (`20240230`) is rejected,
-and a string without any DTSTART throws instead of starting "now".
+else `dtstart:`, else the DTSTART line (rrule.js `rrulestr`). Unlike rrule.js:
+folded lines are unfolded and CRLF works; a DTSTART line must be a whole
+DTSTART (`DTSTART:20240101 090000` throws instead of meaning midnight);
+parameter names may contain digits; an impossible DTSTART date (`20240230`)
+throws, and second 60 is read as 59; a string without any DTSTART throws
+instead of starting "now". Malformed values throw `FormatException`.
 
 Supported beyond rrule.js:
 - SKIP (RFC 7529 `RSCALE=GREGORIAN;SKIP=…` in `RRuleOptions.parse`; JSCalendar

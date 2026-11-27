@@ -232,6 +232,12 @@ class RRuleOptions {
               throw FormatException('Invalid number in RRULE: $p')
         ];
 
+    int one(String key, String v) {
+      final values = ints(v);
+      if (values.length != 1) throw FormatException('Invalid $key: $v');
+      return values.single;
+    }
+
     for (final attr in body.split(';')) {
       if (attr.isEmpty) continue;
       final eq = attr.indexOf('=');
@@ -242,9 +248,9 @@ class RRuleOptions {
           freq =
               _frequencies[value.toLowerCase()] ?? (throw FormatException('Invalid FREQ: $value'));
         case 'INTERVAL':
-          interval = ints(value).single;
+          interval = one(key, value);
         case 'COUNT':
-          count = ints(value).single;
+          count = one(key, value);
         case 'UNTIL':
           final m = RegExp(r'^(\d{4})(\d{2})(\d{2})(T(\d{2})(\d{2})(\d{2})Z?)?$').firstMatch(value);
           if (m == null) throw FormatException('Invalid UNTIL value: $value');
@@ -344,17 +350,25 @@ class RRuleOptions {
   /// there is no DTSTART at all.
   ///
   /// Differences from rrule.js:
-  ///  * Lines are trimmed at both ends, so CRLF line endings work (rrule.js
-  ///    only strips the first match of `/^\s+|\s+$/`, keeping a trailing
-  ///    `\r` that then breaks the last value).
+  ///  * Folded lines (a line break followed by a space or tab, RFC 5545
+  ///    section 3.1) are unfolded first, and lines are trimmed at both ends,
+  ///    so CRLF line endings work (rrule.js only strips the first match of
+  ///    `/^\s+|\s+$/`, keeping a trailing `\r` that then breaks the last
+  ///    value).
+  ///  * A DTSTART line must be a whole DTSTART: rrule.js reads
+  ///    `DTSTART:20240101 090000` as midnight.
+  ///  * Parameter names may contain digits (`X-SLOT2`): rrule.js then ignores
+  ///    the whole DTSTART.
   ///  * An impossible DTSTART date is rejected (rrule.js moves 20240230 to
-  ///    March 1).
+  ///    March 1); second 60 (a leap second) is read as 59.
   ///  * Without any DTSTART it throws instead of starting the rule "now".
   static RRuleOptions parseString(String s, {DateTime? dtstart}) {
     DateTime? inlineStart, lineStart;
     final merged = <String, String>{};
+    // RFC 5545 section 3.1: a line break followed by a space or tab continues
+    // the previous line.
     final lines = [
-      for (final line in s.split('\n'))
+      for (final line in s.replaceAll(RegExp(r'\r?\n[ \t]'), '').split('\n'))
         if (line.trim().isNotEmpty) line.trim()
     ];
     for (final (index, line) in lines.indexed) {
@@ -384,7 +398,7 @@ class RRuleOptions {
           }
         case 'DTSTART':
           final m = _dtstartPattern.firstMatch(line);
-          if (m == null || m.start != 0) {
+          if (m == null || m.start != 0 || m.end != line.length) {
             throw FormatException('Invalid DTSTART: $line');
           }
           final start = _parseDtstart(m);
@@ -401,8 +415,8 @@ class RRuleOptions {
   // parsestring.js parseDtstart: `DTSTART`, parameters in any order (quoted
   // values may contain `;` and `:`), then `:` or `=` and the value.
   static final _dtstartPattern =
-      RegExp(r'DTSTART((?:;[A-Z-]+=(?:"[^"]*"|[^;:]*))*)(?::|=)([^;\s]*)', caseSensitive: false);
-  static final _paramPattern = RegExp(r';([A-Z-]+)=("[^"]*"|[^;:]*)', caseSensitive: false);
+      RegExp(r'DTSTART((?:;[A-Z0-9-]+=(?:"[^"]*"|[^;:]*))*)(?::|=)([^;\s]*)', caseSensitive: false);
+  static final _paramPattern = RegExp(r';([A-Z0-9-]+)=("[^"]*"|[^;:]*)', caseSensitive: false);
 
   static DateTime _parseDtstart(RegExpMatch m) {
     final value = m.group(2)!;
@@ -421,13 +435,15 @@ class RRuleOptions {
     final d = RegExp(r'^(\d{4})(\d{2})(\d{2})(T(\d{2})(\d{2})(\d{2})Z?)?$').firstMatch(value);
     if (d == null) throw FormatException('Invalid DTSTART value: $value');
     int g(int i) => int.parse(d.group(i) ?? '0');
-    final start = DateTime.utc(g(1), g(2), g(3), g(5), g(6), g(7));
+    // RFC 5545 section 3.3.5: without leap second support, second 60 is 59.
+    final second = g(7) == 60 ? 59 : g(7);
+    final start = DateTime.utc(g(1), g(2), g(3), g(5), g(6), second);
     if (start.year != g(1) ||
         start.month != g(2) ||
         start.day != g(3) ||
         start.hour != g(5) ||
         start.minute != g(6) ||
-        start.second != g(7)) {
+        start.second != second) {
       throw FormatException('Impossible DTSTART value: $value');
     }
     return start;

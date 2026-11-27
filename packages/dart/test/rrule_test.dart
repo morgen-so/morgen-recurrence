@@ -619,6 +619,23 @@ void main() {
           throwsFormatException);
     });
 
+    test('folded lines are unfolded (RFC 5545 section 3.1)', () {
+      expect(strAll('DTSTART:20240101T090000\r\nRRULE:FREQ=DAILY;\r\n COUNT=2'),
+          ['2024-01-01T09:00:00', '2024-01-02T09:00:00']);
+      expect(strAll('DTSTART:20240101T090000\nRRULE:FREQ=DAILY;CO\n\tUNT=2'),
+          ['2024-01-01T09:00:00', '2024-01-02T09:00:00']);
+    });
+
+    test('parameter names may contain digits', () {
+      expect(strAll('DTSTART;X-SLOT2=A:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1'),
+          ['2024-01-01T09:00:00']);
+    });
+
+    test('a leap second start is read as second 59 (RFC 5545 section 3.3.5)', () {
+      expect(RRuleOptions.parseString('DTSTART:19970630T235960Z\nRRULE:FREQ=DAILY').dtstart,
+          _d('1997-06-30T23:59:59'));
+    });
+
     test('CRLF line endings and blank lines', () {
       expect(strAll('\r\nDTSTART:20240101T090000\r\n\r\nRRULE:FREQ=DAILY;COUNT=2\r\n'),
           ['2024-01-01T09:00:00', '2024-01-02T09:00:00']);
@@ -651,6 +668,12 @@ void main() {
         // Impossible dates.
         'DTSTART;VALUE=DATE:20240230\nRRULE:FREQ=DAILY',
         'DTSTART:20240101T250000\nRRULE:FREQ=DAILY',
+        'DTSTART:20240101T235961\nRRULE:FREQ=DAILY',
+        // A DTSTART line is a whole DTSTART: the time is not dropped.
+        'DTSTART:20240101 090000\nRRULE:FREQ=DAILY',
+        // One integer for COUNT and INTERVAL.
+        'FREQ=DAILY;COUNT=1,2',
+        'FREQ=DAILY;INTERVAL=1,2',
       ]) {
         expect(() => RRuleOptions.parseString(s, dtstart: start), throwsFormatException, reason: s);
       }
