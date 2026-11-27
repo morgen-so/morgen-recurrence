@@ -23,7 +23,8 @@ wall clock. Non-UTC inputs are read by their fields. There is no time zone
 support by design: convert the results with your own time zone data.
 
 `RRuleOptions.parseString` and `RRule.fromString` read a rule line, a DTSTART
-line (parameters in any order, quoted or not) or both, like rrule.js
+line (parameters in any order, quoted or not; `VALUE` is `DATE` or
+`DATE-TIME`) or both, like rrule.js
 `parseString`. Every line is checked; only the first two are used. DTSTART is
 floating and TZID is ignored. The start is the DTSTART inside the rule line,
 else `dtstart:`, else the DTSTART line (rrule.js `rrulestr`). Unlike rrule.js:

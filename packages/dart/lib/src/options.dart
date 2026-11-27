@@ -412,11 +412,17 @@ class RRuleOptions {
     return parse([for (final e in merged.entries) '${e.key}=${e.value}'].join(';'), dtstart: begin);
   }
 
-  // parsestring.js parseDtstart: `DTSTART`, parameters in any order (quoted
-  // values may contain `;` and `:`), then `:` or `=` and the value.
-  static final _dtstartPattern =
-      RegExp(r'DTSTART((?:;[A-Z0-9-]+=(?:"[^"]*"|[^;:]*))*)(?::|=)([^;\s]*)', caseSensitive: false);
-  static final _paramPattern = RegExp(r';([A-Z0-9-]+)=("[^"]*"|[^;:]*)', caseSensitive: false);
+  // parsestring.js parseDtstart: `DTSTART` at the start of the line or after
+  // a `;`, parameters in any order, then `:` or `=` and the value. A
+  // parameter value is a comma-separated list of quoted (which may contain
+  // `;` `:` `,`) or plain values (RFC 5545 section 3.1).
+  static final _dtstartPattern = RegExp(
+      r'(?<=^|;)DTSTART((?:;[A-Z0-9-]+=(?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)*)'
+      r'(?::|=)([^;\s]*)',
+      caseSensitive: false);
+  static final _paramPattern = RegExp(
+      r';([A-Z0-9-]+)=((?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)',
+      caseSensitive: false);
 
   static DateTime _parseDtstart(RegExpMatch m) {
     final value = m.group(2)!;
@@ -425,6 +431,9 @@ class RRuleOptions {
       if (param.group(1)!.toUpperCase() == 'VALUE') {
         valueType = param.group(2)!.replaceAll('"', '').toUpperCase();
       }
+    }
+    if (valueType != null && valueType != 'DATE' && valueType != 'DATE-TIME') {
+      throw FormatException('Unsupported DTSTART;VALUE=$valueType');
     }
     if (valueType == 'DATE' && !RegExp(r'^\d{8}$').hasMatch(value)) {
       throw FormatException('Invalid DTSTART;VALUE=DATE value: $value');

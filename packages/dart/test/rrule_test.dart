@@ -617,6 +617,11 @@ void main() {
           ['2024-01-01T09:00:00']);
       expect(() => RRuleOptions.parseString('DTSTART;X-NOTE="a;b";VALUE=DATE:20240101T090000'),
           throwsFormatException);
+      // A parameter value may be a list of quoted values.
+      expect(strAll('DTSTART;X-LABEL="a","b;c";TZID=UTC:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1'),
+          ['2024-01-01T09:00:00']);
+      expect(strAll('DTSTART;X-LABEL=a,"b:c",d:20240101T090000\nRRULE:FREQ=DAILY;COUNT=1'),
+          ['2024-01-01T09:00:00']);
     });
 
     test('folded lines are unfolded (RFC 5545 section 3.1)', () {
@@ -674,6 +679,11 @@ void main() {
         // One integer for COUNT and INTERVAL.
         'FREQ=DAILY;COUNT=1,2',
         'FREQ=DAILY;INTERVAL=1,2',
+        // Only DATE and DATE-TIME starts.
+        'DTSTART;VALUE=TEXT:20240101\nRRULE:FREQ=DAILY',
+        'DTSTART;VALUE=PERIOD:20240101T090000/PT1H\nRRULE:FREQ=DAILY',
+        // An inline DTSTART is its own part: not hidden in another value.
+        'RRULE:FREQ=DAILY;COUNT=2DTSTART=20240101T090000',
       ]) {
         expect(() => RRuleOptions.parseString(s, dtstart: start), throwsFormatException, reason: s);
       }
