@@ -363,53 +363,9 @@ class RRuleOptions {
   ///    March 1); second 60 (a leap second) is read as 59.
   ///  * Without any DTSTART it throws instead of starting the rule "now".
   static RRuleOptions parseString(String s, {DateTime? dtstart}) {
-    DateTime? inlineStart, lineStart;
-    final merged = <String, String>{};
-    // RFC 5545 section 3.1: a line break followed by a space or tab continues
-    // the previous line.
-    final lines = [
-      for (final line in s.replaceAll(RegExp(r'\r?\n[ \t]'), '').split('\n'))
-        if (line.trim().isNotEmpty) line.trim()
-    ];
-    for (final (index, line) in lines.indexed) {
-      final header = RegExp(r'^([A-Z]+?)[:;]').firstMatch(line.toUpperCase())?.group(1);
-      switch (header) {
-        case null || 'RRULE' || 'EXRULE':
-          var body = line.replaceFirst(RegExp(r'^(?:RRULE|EXRULE):', caseSensitive: false), '');
-          final inline = _dtstartPattern.firstMatch(body);
-          DateTime? start;
-          if (inline != null) {
-            start = _parseDtstart(inline);
-            body = body.replaceRange(inline.start, inline.end, '');
-          }
-          // The parts as written, so that parse() sees every value, even one
-          // that a later duplicate overrides (rrule.js parses them all).
-          final attrs = [
-            for (final attr in body.split(';'))
-              if (attr.isNotEmpty && !attr.toUpperCase().startsWith('TZID='))
-                attr.toUpperCase().startsWith('BYWEEKDAY=') ? 'BYDAY${attr.substring(9)}' : attr
-          ];
-          parse(attrs.join(';'), dtstart: DateTime.utc(2000));
-          if (index >= 2) continue;
-          if (start != null) inlineStart = start;
-          for (final attr in attrs) {
-            final eq = attr.indexOf('=');
-            merged[attr.substring(0, eq).toUpperCase()] = attr.substring(eq + 1);
-          }
-        case 'DTSTART':
-          final m = _dtstartPattern.firstMatch(line);
-          if (m == null || m.start != 0 || m.end != line.length) {
-            throw FormatException('Invalid DTSTART: $line');
-          }
-          final start = _parseDtstart(m);
-          if (index < 2) lineStart = start;
-        default:
-          throw FormatException('Unsupported RFC prop $header in $line');
-      }
-    }
-    final begin = inlineStart ?? dtstart ?? lineStart;
-    if (begin == null) throw ArgumentError('No DTSTART in the string and no dtstart given');
-    return parse([for (final e in merged.entries) '${e.key}=${e.value}'].join(';'), dtstart: begin);
+    final (:parts, :start) = parseRRuleParts(s, dtstart: dtstart);
+    if (start == null) throw ArgumentError('No DTSTART in the string and no dtstart given');
+    return parse([for (final e in parts.entries) '${e.key}=${e.value}'].join(';'), dtstart: start);
   }
 
   // parsestring.js parseDtstart: `DTSTART` at the start of the line or after
@@ -464,6 +420,60 @@ class RRuleOptions {
     final d = DateTime.parse(s.length == 10 ? '${s}T00:00:00Z' : (s.endsWith('Z') ? s : '${s}Z'));
     return d;
   }
+}
+
+/// The rule parts of an iCalendar recurrence string as [RRuleOptions.parseString]
+/// reads it: every line checked, the first two merged (upper-case keys, the
+/// values as written, BYWEEKDAY as BYDAY, TZID left out), and the start
+/// (inline DTSTART, else [dtstart], else a DTSTART line; null without any).
+/// Not exported: the JSCalendar conversion needs the parts as written, e.g.
+/// whether UNTIL ends in `Z`.
+({Map<String, String> parts, DateTime? start}) parseRRuleParts(String s, {DateTime? dtstart}) {
+  DateTime? inlineStart, lineStart;
+  final merged = <String, String>{};
+  // RFC 5545 section 3.1: a line break followed by a space or tab continues
+  // the previous line.
+  final lines = [
+    for (final line in s.replaceAll(RegExp(r'\r?\n[ \t]'), '').split('\n'))
+      if (line.trim().isNotEmpty) line.trim()
+  ];
+  for (final (index, line) in lines.indexed) {
+    final header = RegExp(r'^([A-Z]+?)[:;]').firstMatch(line.toUpperCase())?.group(1);
+    switch (header) {
+      case null || 'RRULE' || 'EXRULE':
+        var body = line.replaceFirst(RegExp(r'^(?:RRULE|EXRULE):', caseSensitive: false), '');
+        final inline = RRuleOptions._dtstartPattern.firstMatch(body);
+        DateTime? start;
+        if (inline != null) {
+          start = RRuleOptions._parseDtstart(inline);
+          body = body.replaceRange(inline.start, inline.end, '');
+        }
+        // The parts as written, so that parse() sees every value, even one
+        // that a later duplicate overrides (rrule.js parses them all).
+        final attrs = [
+          for (final attr in body.split(';'))
+            if (attr.isNotEmpty && !attr.toUpperCase().startsWith('TZID='))
+              attr.toUpperCase().startsWith('BYWEEKDAY=') ? 'BYDAY${attr.substring(9)}' : attr
+        ];
+        RRuleOptions.parse(attrs.join(';'), dtstart: DateTime.utc(2000));
+        if (index >= 2) continue;
+        if (start != null) inlineStart = start;
+        for (final attr in attrs) {
+          final eq = attr.indexOf('=');
+          merged[attr.substring(0, eq).toUpperCase()] = attr.substring(eq + 1);
+        }
+      case 'DTSTART':
+        final m = RRuleOptions._dtstartPattern.firstMatch(line);
+        if (m == null || m.start != 0 || m.end != line.length) {
+          throw FormatException('Invalid DTSTART: $line');
+        }
+        final start = RRuleOptions._parseDtstart(m);
+        if (index < 2) lineStart = start;
+      default:
+        throw FormatException('Unsupported RFC prop $header in $line');
+    }
+  }
+  return (parts: merged, start: inlineStart ?? dtstart ?? lineStart);
 }
 
 /// Floating copy of [d] (wall-clock fields as UTC), truncated to milliseconds

@@ -16,7 +16,13 @@ rule.after(dt); rule.before(dt);
 RRule.fromString('DTSTART:20240101T090000\nRRULE:FREQ=DAILY;COUNT=3');
 RRuleOptions.parseString('RRULE:FREQ=WEEKLY', dtstart: start); // rrule.js parseString
 RRuleOptions.fromJsCalendar(jsCalendarRule, dtstart);   // JSCalendar (RFC 8984)
+rruleToJsCalendar('FREQ=WEEKLY;BYDAY=MO');               // RRULE -> RecurrenceRule
+jsCalendarToRRule({'frequency': 'weekly'});              // RecurrenceRule -> RRULE
+recurrenceOverridesFromICal(['EXDATE:20240102T090000']);  // EXDATE/RDATE <-> overrides
 ```
+
+The JSCalendar conversion follows draft-ietf-calext-jscalendar-icalendar; see
+[JSCalendar conversion](../../README.md#jscalendar-conversion).
 
 Times are **floating**: `DateTime`s with `isUtc: true` whose fields hold the
 wall clock. Non-UTC inputs are read by their fields. There is no time zone
@@ -44,7 +50,7 @@ Supported beyond rrule.js:
 - Invalid values (outside RFC 5545's ranges) throw `ArgumentError` /
   `FormatException`.
 
-Not included: TZID, RRuleSet (RDATE/EXDATE), BYEASTER, text (NLP). The RFC 8984
+Not included: TZID, RRuleSet (expanding RDATE/EXDATE), BYEASTER, text (NLP). The RFC 8984
 rule that the start is always the first occurrence (and counts towards
 `count`) is left to the caller.
 

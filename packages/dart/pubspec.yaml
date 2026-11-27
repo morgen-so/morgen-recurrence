@@ -1,8 +1,9 @@
 name: morgen_rrule
 description: >-
   RFC 5545 recurrence rule expansion, a port of the rrule.js 2.8.0 core with
-  Morgen's fixes. Conformance-tested against the same fixtures as @morgen-so/rrule.
-version: 1.0.1
+  Morgen's fixes, and conversion to and from JSCalendar (RFC 8984).
+  Conformance-tested against the same fixtures as @morgen-so/rrule.
+version: 1.1.0
 publish_to: none
 repository: https://github.com/morgen-so/morgen-recurrence
 

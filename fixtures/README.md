@@ -7,6 +7,11 @@ with one case per line. Both packages must reproduce `expected` exactly:
 
 **Do not edit by hand.** Regenerate with `node tools/gen-fixtures.mjs`.
 
+The exception is [`conversion/`](conversion): hand-written cases for the
+JSCalendar conversion, with their own format (described in the file).
+`conformance_test.dart` and `conformance.test.ts` don't read that folder.
+`conversion_test.dart` and `jscalendar.test.ts` run it instead.
+
 ## Case fields
 
 | field | meaning |

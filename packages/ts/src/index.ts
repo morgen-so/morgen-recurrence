@@ -18,6 +18,28 @@ export { RRule } from './rrule'
 export { RRuleSet } from './rruleset'
 
 export { rrulestr } from './rrulestr'
+export {
+  rruleToJsCalendar,
+  rruleMeaningInJsCalendar,
+  jsCalendarToRRule,
+  recurrenceOverridesFromICal,
+  recurrenceOverridesToICal,
+} from './jscalendar'
+export type {
+  ICalDateForm,
+  ICalRecurrenceDates,
+  JSCalendarDay,
+  JSCalendarFrequency,
+  JSCalendarNDay,
+  JSCalendarPatch,
+  JSCalendarRecurrenceRule,
+  JsCalendarToRRuleOptions,
+  RecurrenceOverridesFromICalOptions,
+  RecurrenceOverridesToICalOptions,
+  RRuleToJsCalendarOptions,
+  ToEventTime,
+  ToUtc,
+} from './jscalendar'
 export { Frequency } from './types'
 export type { ByWeekday, Options } from './types'
 export { Weekday, ALL_WEEKDAYS } from './weekday'

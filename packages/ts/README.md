@@ -12,6 +12,11 @@ const rule = rrulestr('DTSTART;TZID=UTC:20240101T090000\nRRULE:FREQ=MONTHLY;BYDA
 rule.between(new Date('2024-01-01'), new Date('2024-03-01'), true)
 ```
 
+It also converts recurrence to and from JSCalendar (RFC 8984):
+`rruleToJsCalendar`, `jsCalendarToRRule`, `recurrenceOverridesFromICal` and
+`recurrenceOverridesToICal`. See
+[JSCalendar conversion](../../README.md#jscalendar-conversion).
+
 All of rrule.js's documentation applies, with the differences below. Bugs 1–5
 are described in the [repository README](../../README.md#what-changes-compared-with-rrulejs-280).
 

@@ -9,7 +9,9 @@ implementations that must produce **identical** results:
 | [`packages/dart`](packages/dart) — `morgen_rrule` | Dart | port of the rrule.js core |
 
 Both run one shared conformance corpus, [`fixtures/`](fixtures), in CI, plus a
-differential fuzz job on fresh random rules. Neither package contains time
+differential fuzz job on fresh random rules. Both also convert recurrence to
+and from JSCalendar (RFC 8984; see [JSCalendar conversion](#jscalendar-conversion)).
+Neither package contains time
 zone data: rules are expanded on floating (wall-clock) times, and the
 TypeScript package takes TZID conversions from an injected adapter (see
 [Time zones](#time-zones)).
@@ -96,6 +98,7 @@ Performance work, with identical results (see the [benchmarks](#performance)):
 
 ```
 fixtures/               shared conformance corpus (JSON, one case per line)
+fixtures/conversion/    hand-written JSCalendar conversion cases
 packages/ts/            @morgen-so/rrule: src/, test/ (rrule.js suite + conformance + API compat), bench/
 packages/dart/          morgen_rrule: lib/, test/ (focused tests + conformance), bench/
 tools/gen-fixtures.mjs  regenerates fixtures/ from the TypeScript package
@@ -241,6 +244,65 @@ DST gaps and folds are the adapter's business; the engine is floating by
 design.
 
 The Dart package has no TZID at all; callers convert the floating results.
+
+## JSCalendar conversion
+
+Both packages convert between iCalendar recurrence (RFC 5545, RFC 7529 SKIP)
+and JSCalendar (RFC 8984), as
+[draft-ietf-calext-jscalendar-icalendar-31](https://datatracker.ietf.org/doc/draft-ietf-calext-jscalendar-icalendar/)
+defines it (sections 2.3.18 EXDATE, 2.3.30 RDATE, 2.3.33 RRULE, 3.2):
+
+| | TypeScript | Dart |
+|---|---|---|
+| RRULE → RecurrenceRule | `rruleToJsCalendar(rrule, { toEventTime, keepRRuleMeaning })` | `rruleToJsCalendar(rrule, toEventTime:, keepRRuleMeaning:)` |
+| RecurrenceRule → RRULE | `jsCalendarToRRule(rule, { untilForm, toUtc, start, keepJsCalendarMeaning })` | `jsCalendarToRRule(rule, untilForm:, toUtc:, start:, keepJsCalendarMeaning:)` |
+| EXDATE/RDATE → `recurrenceOverrides` | `recurrenceOverridesFromICal(lines, { toEventTime })` | `recurrenceOverridesFromICal(lines, toEventTime:)` |
+| `recurrenceOverrides` → EXDATE/RDATE | `recurrenceOverridesToICal(overrides, { form, timeZone, isOccurrence })` | `recurrenceOverridesToICal(overrides, form:, timeZone:, isOccurrence:)` |
+
+```ts
+rruleToJsCalendar('FREQ=WEEKLY;BYDAY=MO,-1FR;UNTIL=20240930T120000Z', {
+  toEventTime: (wall, tz) => /* wall clock in tz -> wall clock in the event's zone */,
+})
+// { '@type': 'RecurrenceRule', frequency: 'weekly', byDay: [...], until: '2024-09-30T14:00:00' }
+jsCalendarToRRule(rule, { untilForm: 'zoned', toUtc: (wall) => /* event zone -> UTC */ })
+// 'FREQ=WEEKLY;UNTIL=20240930T120000Z;BYDAY=MO,-1FR'
+```
+
+- **Literal by default.** Each part maps to its property, as the draft says:
+  values in lower case, BYDAY to NDay objects, BYMONTH to strings. Only the
+  parts that are written are set, so `interval` appears only when INTERVAL is
+  written, and INTERVAL=1 is left out on the way back.
+- **UNTIL** is a LocalDateTime in the event's time zone. A date becomes
+  midnight, a local time stays as written, and a UTC time goes through
+  `toEventTime`. Back, it takes the form of the event's DTSTART (`untilForm`:
+  `date`, `local`, `utc`, or `zoned`, which converts to UTC with `toUtc` as
+  RFC 5545 requires).
+- **Implicit properties.** RFC 8984 section 4.3.3.1 (step 3) adds properties
+  that RFC 5545 implementations such as rrule.js do not. So a literal mapping
+  can change the occurrences of a few rules: `FREQ=YEARLY;BYMONTHDAY=15` is the
+  15th of every month in rrule.js, but only of the start month as JSCalendar.
+  - `keepRRuleMeaning` adds what keeps the rrule.js occurrences (here `byMonth`
+    1–12). One kind of rule has no such form and stays literal: yearly
+    BYMONTHDAY with an nth BYDAY and no BYMONTH. That is 65 of the corpus's
+    9,425 rules.
+  - `keepJsCalendarMeaning` adds what RFC 8984 adds for the start, so that
+    rrule.js gives the JSCalendar occurrences.
+- **Overrides.** An EXDATE is `{"excluded": true}`, an RDATE is `{}`, and an
+  RDATE PERIOD is `{"duration": …}`. Back, a recurrence id the rule does not
+  generate is an RDATE (`isOccurrence`). Patches that change an occurrence are
+  returned in `overrides` for a recurrence override component.
+- **Not covered.** The provider formats (Google, Microsoft Graph), EXRULE and
+  several RRULEs (`recurrenceRules[]`, `excludedRecurrenceRules`; JSCalendar
+  2.0 drops both), and the rest of an event.
+
+Tests:
+- [`fixtures/conversion/jscalendar.json`](fixtures/conversion/jscalendar.json)
+  has hand-written cases, including the draft's own examples. Time zones are
+  fixed offsets per case.
+- The conformance tests also check every corpus case by its occurrences: the
+  RRULE → JSCalendar → RRULE round trip, `keepRRuleMeaning` evaluated as
+  JSCalendar, and `keepJsCalendarMeaning` against `jscalExpected`.
+- Both packages give the same output for every rule in the corpus.
 
 ## Performance
 

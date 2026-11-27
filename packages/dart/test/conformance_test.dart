@@ -45,6 +45,34 @@ Object? _evaluate(RRuleOptions Function() options, Map<String, dynamic> q) {
   }
 }
 
+/// A RecurrenceRule without `@type`s and a default interval, for comparing.
+String _normalJs(Map<String, dynamic> rule) {
+  final r = {
+    for (final e in rule.entries)
+      if (e.key != '@type' &&
+          !(e.key == 'interval' && e.value == 1) &&
+          !(e.key == 'rscale' && e.value == 'gregorian'))
+        e.key: e.key == 'byDay'
+            ? [
+                for (final d in e.value as List)
+                  {
+                    for (final f in (d as Map).entries)
+                      if (f.key != '@type') f.key: f.value
+                  }
+              ]
+            : e.value
+  };
+  return jsonEncode(Map.fromEntries(r.entries.toList()..sort((a, b) => a.key.compareTo(b.key))));
+}
+
+Map<String, dynamic>? _tryJs(String rrule) {
+  try {
+    return rruleToJsCalendar(rrule);
+  } on FormatException {
+    return null;
+  }
+}
+
 List<File> _fixtureFiles() {
   final spec = Platform.environment['FIXTURES'] ?? '../../fixtures';
   return [
@@ -62,7 +90,7 @@ List<File> _fixtureFiles() {
 }
 
 void main() {
-  var total = 0, jscalTotal = 0;
+  var total = 0, jscalTotal = 0, withoutForm = 0;
   for (final file in _fixtureFiles()) {
     final name = file.uri.pathSegments.last;
     test(name, () {
@@ -92,6 +120,46 @@ void main() {
           failures.add('${c['id']} (string) ${jsonEncode(string)}\n'
               '  expected $expected\n  got      $gotString');
         }
+        // JSCalendar conversion, checked by the occurrences:
+        //  * RRULE -> JSCalendar -> RRULE gives the RRULE's occurrences;
+        //  * RRULE -> JSCalendar with keepRRuleMeaning, evaluated as JSCalendar
+        //    (fromJsCalendar adds RFC 8984's implicit properties), too.
+        final rrule = c['rrule'] as String;
+        void conversion(String name, RRuleOptions Function() options) {
+          final got = jsonEncode(_evaluate(options, q));
+          if (got != expected) {
+            failures.add('${c['id']} ($name) $rrule\n  expected $expected\n  got      $got');
+          }
+        }
+
+        // INTERVAL=0 has no JSCalendar form (RFC 8984: interval >= 1).
+        if (RegExp(r'INTERVAL=0(;|$)').hasMatch(rrule)) {
+          expect(() => rruleToJsCalendar(rrule), throwsFormatException, reason: rrule);
+        } else {
+          conversion(
+              'rrule->jscal->rrule',
+              () => RRuleOptions.parse(jsCalendarToRRule(rruleToJsCalendar(rrule)),
+                  dtstart: dtstart));
+          // Yearly BYMONTHDAY with an nth BYDAY and no BYMONTH has no
+          // meaning-keeping form (see rruleMeaningInJsCalendar).
+          final literal = _tryJs(rrule);
+          final unkeepable = literal != null &&
+              literal['frequency'] == 'yearly' &&
+              literal['byMonthDay'] != null &&
+              literal['byMonth'] == null &&
+              literal['byWeekNo'] == null &&
+              literal['byYearDay'] == null &&
+              ((literal['byDay'] as List?) ?? const [])
+                  .any((d) => (d as Map)['nthOfPeriod'] != null);
+          if (unkeepable) {
+            withoutForm++;
+          } else {
+            conversion(
+                'rrule->jscal keepRRuleMeaning',
+                () => RRuleOptions.fromJsCalendar(
+                    rruleToJsCalendar(rrule, keepRRuleMeaning: true), dtstart)!);
+          }
+        }
         final js = c['jscal'] as Map<String, dynamic>?;
         if (js != null) {
           jscal++;
@@ -100,6 +168,21 @@ void main() {
           final expectedJs =
               c.containsKey('jscalExpected') ? jsonEncode(c['jscalExpected']) : expected;
           final gotJs = jsonEncode(_evaluate(() => RRuleOptions.fromJsCalendar(js, dtstart)!, q));
+          // JSCalendar -> RRULE with keepJsCalendarMeaning has the JSCalendar
+          // occurrences; a literal JSCalendar -> RRULE -> JSCalendar keeps the rule.
+          final gotJsRRule = jsonEncode(_evaluate(
+              () => RRuleOptions.parse(
+                  jsCalendarToRRule(js, start: dtstart, keepJsCalendarMeaning: true),
+                  dtstart: dtstart),
+              q));
+          if (gotJsRRule != expectedJs) {
+            failures.add('${c['id']} (jscal->rrule keepJsCalendarMeaning) ${jsonEncode(js)}\n'
+                '  expected $expectedJs\n  got      $gotJsRRule');
+          }
+          final back = _normalJs(rruleToJsCalendar(jsCalendarToRRule(js)));
+          if (back != _normalJs(js)) {
+            failures.add('${c['id']} (jscal->rrule->jscal) ${jsonEncode(js)}\n  got ${back}');
+          }
           if (gotJs != expectedJs) {
             failures.add('${c['id']} (jscal) ${jsonEncode(js)}\n'
                 '  expected $expectedJs\n  got      $gotJs');
@@ -109,9 +192,10 @@ void main() {
       total += cases.length;
       jscalTotal += jscal;
       print(
-          '$name: ${cases.length - failures.where((f) => !f.contains('(jscal)') && !f.contains('(string)')).length}'
+          '$name: ${cases.length - failures.where((f) => !f.contains('(jscal') && !f.contains('(string)') && !f.contains('(rrule->')).length}'
           '/${cases.length} pass, jscal ${jscal - failures.where((f) => f.contains('(jscal)')).length}'
-          '/$jscal (running total $total + $jscalTotal jscal)');
+          '/$jscal (running total $total + $jscalTotal jscal, '
+          '$withoutForm without a meaning-keeping JSCalendar form)');
       expect(failures.take(10).toList(), isEmpty);
     });
   }
