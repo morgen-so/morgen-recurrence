@@ -1310,7 +1310,121 @@
     "firstDayOfWeek": "su",
     "count": 5
    },
-   "expected": "FREQ=WEEKLY;COUNT=5;BYDAY=MO,-1FR;WKST=SU"
+   "expected": "FREQ=WEEKLY;COUNT=5;BYDAY=MO,-1FR;WKST=SU",
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "weekly-with-month-day-not-in-rfc5545-warns",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "day": "mo"
+     }
+    ],
+    "byMonthDay": [
+     15
+    ]
+   },
+   "options": {
+    "warnings": 1
+   },
+   "expected": "FREQ=WEEKLY;BYMONTHDAY=15;BYDAY=MO"
+  },
+  {
+   "id": "weekly-with-month-day-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "day": "mo"
+     }
+    ],
+    "byMonthDay": [
+     15
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "monthly-with-year-day-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "byYearDay": [
+     100
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "daily-with-week-number-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "byWeekNo": [
+     20
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "yearly-with-week-number-and-nth-day-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "byWeekNo": [
+     20
+    ],
+    "byDay": [
+     {
+      "day": "mo",
+      "nthOfPeriod": 1
+     }
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "monthly-with-nth-day-is-in-rfc5545",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "byDay": [
+     {
+      "day": "mo",
+      "nthOfPeriod": -1
+     }
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": "FREQ=MONTHLY;BYDAY=-1MO"
   },
   {
    "id": "skip-adds-rscale",
@@ -3124,6 +3238,187 @@
     "2025-03-29T12:00:00": {
      "duration": "PT24H"
     }
+   }
+  },
+  {
+   "id": "utc-period-with-a-day-in-zoned-event-across-time-change",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20250329T110000Z/P1D"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      [
+       "0000-01-01T00:00:00",
+       "+01:00"
+      ],
+      [
+       "2025-03-30T03:00:00",
+       "+02:00"
+      ]
+     ]
+    },
+    "toInstant": true,
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T12:00:00": {
+     "duration": "PT24H"
+    }
+   }
+  },
+  {
+   "id": "zoned-period-with-a-day-across-time-change",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250329T120000/P1DT1H"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      [
+       "0000-01-01T00:00:00",
+       "+01:00"
+      ],
+      [
+       "2025-03-30T03:00:00",
+       "+02:00"
+      ]
+     ]
+    },
+    "toInstant": true,
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T12:00:00": {
+     "duration": "PT24H"
+    }
+   }
+  },
+  {
+   "id": "floating-period-with-a-day-kept",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20250329T120000/P1D"
+   ],
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T12:00:00": {
+     "duration": "P1D"
+    }
+   }
+  },
+  {
+   "id": "exdate-of-second-repeated-hour-keeps-first",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z",
+    "EXDATE:20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      [
+       "0000-01-01T00:00:00",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T03:00:00",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {}
+   }
+  },
+  {
+   "id": "exdate-of-both-repeated-hours",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z",
+    "EXDATE:20251026T003000Z,20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      [
+       "0000-01-01T00:00:00",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T03:00:00",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "repeated-hour-rdates-collide-warns",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      [
+       "0000-01-01T00:00:00",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T03:00:00",
+       "+01:00"
+      ]
+     ]
+    },
+    "warnings": 1
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {}
+   }
+  },
+  {
+   "id": "repeated-hour-rdates-collide-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      [
+       "0000-01-01T00:00:00",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T03:00:00",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "error": true
    }
   },
   {

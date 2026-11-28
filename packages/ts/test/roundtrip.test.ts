@@ -64,15 +64,28 @@ describe('RDATE periods keep their end instant', () => {
     const ew = wall(source, end)
     // A wall clock in a skipped hour does not name the instant: leave it out.
     if (toInstant(sw, source).getTime() !== start || toInstant(ew, source).getTime() !== end) continue
+    // Half the periods end with a duration of days (added to the wall clock
+    // of the source zone, RFC 5545 section 3.3.6) and exact time.
+    const days = Math.floor(next() * 3)
+    const exact = Math.floor(next() * 24 * 60) * 60
+    const useDuration = next() < 0.5
+    const dayEnd = new Date(sw.getTime() + days * 86_400_000)
+    const durationEnd = toInstant(dayEnd, source).getTime() + exact * 1000
+    if (useDuration && wall(source, toInstant(dayEnd, source).getTime()).getTime() !== dayEnd.getTime()) continue
+    const expectedEnd = useDuration ? durationEnd : end
+    const value = utc ? icalUtc(start) : icalLocal(sw)
+    const endValue = useDuration
+      ? `P${days ? `${days}D` : ''}T${Math.floor(exact / 3600)}H${(exact % 3600) / 60}M`
+      : utc ? icalUtc(end) : icalLocal(ew)
     const line = utc
-      ? `RDATE;VALUE=PERIOD:${icalUtc(start)}/${icalUtc(end)}`
-      : `RDATE;TZID=${source};VALUE=PERIOD:${icalLocal(sw)}/${icalLocal(ew)}`
+      ? `RDATE;VALUE=PERIOD:${value}/${endValue}`
+      : `RDATE;TZID=${source};VALUE=PERIOD:${value}/${endValue}`
     it(`${i}: ${line} in ${eventZone}`, () => {
       const got = recurrenceOverridesFromICal([line], { toEventTime: toEventTime(eventZone), toInstant, strict: true })
       const [[key, patch]] = Object.entries(got) as [string, { duration: string }][]
       const s = toInstant(new Date(`${key}Z`), eventZone).getTime()
       expect(fmt(new Date(s))).toBe(fmt(new Date(start)))
-      expect(fmt(new Date(s + seconds(patch.duration) * 1000))).toBe(fmt(new Date(end)))
+      expect(fmt(new Date(s + seconds(patch.duration) * 1000))).toBe(fmt(new Date(expectedEnd)))
     })
   }
 })
@@ -122,6 +135,49 @@ describe('recurrence overrides round trip', () => {
       }
       // ...and writing it again gives the same lines.
       expect(recurrenceOverridesToICal(back as Record<string, unknown>, options).properties).toEqual(first.properties)
+    })
+  }
+})
+
+describe('EXDATE and RDATE in the repeated hour', () => {
+  // Zurich on Oct 26, 2025: +02:00 until 01:00Z, then +01:00, so 00:00Z to
+  // 00:59Z and 01:00Z to 01:59Z have the same local times, 02:00 to 02:59.
+  const change = Date.UTC(2025, 9, 26, 1)
+  const local = (instant: number) => fmt(new Date(instant + (instant < change ? 2 : 1) * HOUR))
+  const zurich = (w: Date, zone: string) => {
+    if (zone === 'Etc/UTC') return w
+    const before = w.getTime() - 2 * HOUR
+    return new Date(before < change ? before : w.getTime() - HOUR)
+  }
+  const toEventTime = (w: Date, zone: string) => new Date(`${local(zurich(w, zone).getTime())}Z`)
+  const next = random(SEED + 2)
+  for (let i = 0; i < RUNS / 4; i++) {
+    // Values every 30 minutes from 23:00Z to 03:00Z.
+    const pick = () => {
+      const out = new Set<number>()
+      const n = Math.floor(next() * 5)
+      for (let k = 0; k < n; k++) out.add(Date.UTC(2025, 9, 25, 23) + Math.floor(next() * 9) * HOUR / 2)
+      return [...out].sort()
+    }
+    const rdates = pick()
+    const exdates = pick()
+    if (!rdates.length && !exdates.length) continue
+    const lines = [
+      ...(rdates.length ? [`RDATE:${rdates.map(icalUtc).join(',')}`] : []),
+      ...(exdates.length ? [`EXDATE:${exdates.map(icalUtc).join(',')}`] : []),
+    ]
+    it(`${i}: ${lines.join(' ')}`, () => {
+      // An EXDATE removes the RDATE of its instant; what is left is kept.
+      const kept = rdates.filter((r) => !exdates.includes(r))
+      const expected: Record<string, unknown> = {}
+      for (const e of exdates) expected[local(e)] = { excluded: true }
+      for (const r of kept) expected[local(r)] = {}
+      const collisions = new Set(kept.map(local)).size !== kept.length
+      const warnings: string[] = []
+      const got = recurrenceOverridesFromICal(lines, { toEventTime, toInstant: zurich, onWarning: (m) => warnings.push(m) })
+      expect(got).toEqual(expected)
+      expect(warnings.length > 0).toBe(collisions)
+      if (collisions) expect(() => recurrenceOverridesFromICal(lines, { toEventTime, toInstant: zurich, strict: true })).toThrow()
     })
   }
 })

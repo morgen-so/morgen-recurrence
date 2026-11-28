@@ -65,6 +65,31 @@ String _normalJs(Map<String, dynamic> rule) {
   return jsonEncode(Map.fromEntries(r.entries.toList()..sort((a, b) => a.key.compareTo(b.key))));
 }
 
+/// Whether the RRULE has rule parts RFC 5545 section 3.3.10 does not allow
+/// with its FREQ (the rrule package reads them, as JSCalendar does): strict
+/// jsCalendarToRRule throws on such a rule, lenient warns.
+bool _notInRfc5545(String rrule) {
+  final f = RegExp(r'FREQ=(\w+)').firstMatch(rrule)?.group(1) ?? '';
+  bool has(String part) => RegExp('(^|;)$part=').hasMatch(rrule);
+  final nth = RegExp(r'(^|;)BYDAY=[^;]*\d').hasMatch(rrule);
+  return has('BYMONTHDAY') && f == 'WEEKLY' ||
+      has('BYYEARDAY') && const ['DAILY', 'WEEKLY', 'MONTHLY'].contains(f) ||
+      has('BYWEEKNO') && f != 'YEARLY' ||
+      nth && !const ['MONTHLY', 'YEARLY'].contains(f) ||
+      nth && f == 'YEARLY' && has('BYWEEKNO');
+}
+
+/// The yearly SKIP rules whose keepRRuleMeaning conversion (with its warning)
+/// gives other dates than rrule.js: a month day above 28 moved by SKIP. The
+/// other rules with that warning must keep their dates.
+const _knownChangedBySkip = {
+  'skip-overlap-0415',
+  'skip-overlap-0517',
+  'skip-overlap-0584',
+  'skip-overlap-0623',
+  'skip-overlap-0753',
+};
+
 Map<String, dynamic>? _tryJs(String rrule) {
   try {
     return rruleToJsCalendar(rrule, strict: true);
@@ -125,6 +150,11 @@ void main() {
         //  * RRULE -> JSCalendar with keepRRuleMeaning, evaluated as JSCalendar
         //    (fromJsCalendar adds RFC 8984's implicit properties), too.
         final rrule = c['rrule'] as String;
+        // Export: strict for rules RFC 5545 allows, else lenient (warning
+        // that a calendar may reject the rule).
+        final invalid = _notInRfc5545(rrule);
+        final exportWarnings = <String>[];
+        final strictOut = !invalid;
         void conversion(String name, RRuleOptions Function() options) {
           final got = jsonEncode(_evaluate(options, q));
           if (got != expected) {
@@ -142,8 +172,19 @@ void main() {
           conversion(
               'rrule->jscal->rrule',
               () => RRuleOptions.parse(
-                  jsCalendarToRRule(rruleToJsCalendar(rrule, strict: true)!, strict: true)!,
+                  jsCalendarToRRule(rruleToJsCalendar(rrule, strict: true)!,
+                      strict: strictOut, onWarning: exportWarnings.add)!,
                   dtstart: dtstart));
+          // Strict export throws exactly on the rules RFC 5545 does not allow.
+          if (_tryJs(rrule) case final js?) {
+            var threw = false;
+            try {
+              jsCalendarToRRule(js, strict: true);
+            } on FormatException {
+              threw = true;
+            }
+            if (threw != invalid) failures.add('${c['id']} (strict export throws: $threw) $rrule');
+          }
         }
         if (_tryJs(rrule) != null) {
           // keepRRuleMeaning, evaluated as JSCalendar: the same dates, or a
@@ -152,10 +193,16 @@ void main() {
           final kept = rruleToJsCalendar(rrule,
               keepRRuleMeaning: true, strict: true, onWarning: warnings.add)!;
           if (warnings.isNotEmpty) {
+            // A warning allows other dates only for the known rules, and
+            // those must still differ (so the list stays exact).
             withoutForm++;
-            if (jsonEncode(_evaluate(() => RRuleOptions.fromJsCalendar(kept, dtstart)!, q)) ==
-                expected) {
-              warnedButKept++;
+            final same =
+                jsonEncode(_evaluate(() => RRuleOptions.fromJsCalendar(kept, dtstart)!, q)) ==
+                    expected;
+            if (same) warnedButKept++;
+            if (same == _knownChangedBySkip.contains(c['id'])) {
+              failures.add('${c['id']} (keepRRuleMeaning with a warning, same dates: $same) '
+                  '$rrule\n  ${warnings.join('; ')}');
             }
           } else {
             conversion(
@@ -166,9 +213,9 @@ void main() {
           // (recurrenceToICal -> recurrenceFromICal -> recurrenceToICal, with
           // the start), so a sync loop never changes an event.
           final js1 = rruleToJsCalendar(rrule, strict: true)!;
-          final s1 = jsCalendarToRRule(js1, strict: true)!;
+          final s1 = jsCalendarToRRule(js1, strict: strictOut, onWarning: exportWarnings.add)!;
           final js2 = rruleToJsCalendar(s1, strict: true)!;
-          final s2 = jsCalendarToRRule(js2, strict: true)!;
+          final s2 = jsCalendarToRRule(js2, strict: strictOut, onWarning: exportWarnings.add)!;
           if (s1 != s2 || _normalJs(js1) != _normalJs(js2)) {
             failures.add('${c['id']} (rrule round trip) $rrule\n'
                 '  $s1 ${_normalJs(js1)}\n  $s2 ${_normalJs(js2)}');
@@ -176,11 +223,14 @@ void main() {
           List<String> series(List<Map<String, Object?>> rules,
                   [Map<String, Object?>? overrides]) =>
               recurrenceToICal(
-                  recurrenceRules: rules,
-                  recurrenceOverrides: overrides,
-                  start: dtstart,
-                  keepJsCalendarMeaning: true,
-                  isOccurrence: (_) => true).properties;
+                      recurrenceRules: rules,
+                      recurrenceOverrides: overrides,
+                      start: dtstart,
+                      keepJsCalendarMeaning: true,
+                      isOccurrence: (_) => true,
+                      strict: strictOut,
+                      onWarning: exportWarnings.add)
+                  .properties;
           final p1 = series([kept]);
           final back = recurrenceFromICal(p1, strict: true);
           final p2 = series(back.recurrenceRules, back.recurrenceOverrides);
@@ -216,16 +266,20 @@ void main() {
           // occurrences; a literal JSCalendar -> RRULE -> JSCalendar keeps the rule.
           final gotJsRRule = jsonEncode(_evaluate(
               () => RRuleOptions.parse(
-                  jsCalendarToRRule(js, start: dtstart, keepJsCalendarMeaning: true, strict: true)!,
+                  jsCalendarToRRule(js,
+                      start: dtstart,
+                      keepJsCalendarMeaning: true,
+                      strict: strictOut,
+                      onWarning: exportWarnings.add)!,
                   dtstart: dtstart),
               q));
           if (gotJsRRule != expectedJs) {
             failures.add('${c['id']} (jscal->rrule keepJsCalendarMeaning) ${jsonEncode(js)}\n'
                 '  expected $expectedJs\n  got      $gotJsRRule');
           }
-          final back =
-              _normalJs(rruleToJsCalendar(jsCalendarToRRule(js, strict: true)!, strict: true)!);
-          if (jsCalendarToRRule(js) != jsCalendarToRRule(js, strict: true)) {
+          final back = _normalJs(
+              rruleToJsCalendar(jsCalendarToRRule(js, strict: strictOut)!, strict: true)!);
+          if (jsCalendarToRRule(js) != jsCalendarToRRule(js, strict: strictOut)) {
             failures.add('${c['id']} (jscal->rrule lenient) ${jsonEncode(js)}');
           }
           if (back != _normalJs(js)) {
@@ -235,6 +289,10 @@ void main() {
             failures.add('${c['id']} (jscal) ${jsonEncode(js)}\n'
                 '  expected $expectedJs\n  got      $gotJs');
           }
+        }
+        // The RFC 5545 warning comes only for those rules.
+        if (!invalid && exportWarnings.any((m) => m.startsWith('RFC 5545 does not allow'))) {
+          failures.add('${c['id']} (RFC 5545 warning for a valid rule) $rrule');
         }
       }
       total += cases.length;

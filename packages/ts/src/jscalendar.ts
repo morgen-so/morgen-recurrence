@@ -901,7 +901,8 @@ function startMatches(rule: JSCalendarRecurrenceRule, start: Date): boolean {
 }
 
 function toRRule(rule: JSCalendarRecurrenceRule, options: JsCalendarToRRuleOptions): string | null {
-  const r = checkRule(rule, issues(!!options.strict, options.onWarning))
+  const issue = issues(!!options.strict, options.onWarning)
+  const r = checkRule(rule, issue)
   if (!r) return null
   if (options.keepJsCalendarMeaning) {
     if (!options.start) throw new TypeError('keepJsCalendarMeaning needs the start')
@@ -914,6 +915,10 @@ function toRRule(rule: JSCalendarRecurrenceRule, options: JsCalendarToRRuleOptio
     }
   }
   const js = r.rule
+  const invalid = notInRfc5545(js)
+  if (invalid) {
+    issue(`RFC 5545 does not allow ${invalid}, so a calendar may reject the rule: ${JSON.stringify(rule)}`)
+  }
   const parts = [`FREQ=${js.frequency.toUpperCase()}`]
   const add = (name: string, v: unknown[] | undefined) => {
     if (v && v.length) parts.push(`${name}=${v.join(',')}`)
@@ -936,6 +941,25 @@ function toRRule(rule: JSCalendarRecurrenceRule, options: JsCalendarToRRuleOptio
   }
   if (js.skip !== undefined) parts.push(`SKIP=${js.skip.toUpperCase()}`)
   return parts.join(';')
+}
+
+/**
+ * The rule parts RFC 5545 section 3.3.10 does not allow with the rule's
+ * frequency (JSCalendar allows them: they limit the occurrences), or
+ * undefined. rrule.js reads them as JSCalendar does.
+ */
+function notInRfc5545(r: JSCalendarRecurrenceRule): string | undefined {
+  const f = r.frequency
+  const found: string[] = []
+  const has = (v: unknown[] | undefined) => !!v && v.length > 0
+  if (has(r.byMonthDay) && f === 'weekly') found.push('BYMONTHDAY')
+  if (has(r.byYearDay) && (f === 'daily' || f === 'weekly' || f === 'monthly')) found.push('BYYEARDAY')
+  if (has(r.byWeekNo) && f !== 'yearly') found.push('BYWEEKNO')
+  if (r.byDay?.some((d) => d.nthOfPeriod != null)) {
+    if (f !== 'monthly' && f !== 'yearly') found.push('BYDAY with a number')
+    else if (f === 'yearly' && has(r.byWeekNo)) found.push('BYDAY with a number and BYWEEKNO')
+  }
+  return found.length ? `${found.join(', ')} with FREQ=${f.toUpperCase()}` : undefined
 }
 
 function untilToICal(until: Time, { untilForm = 'local', toUtc, toEventTime }: JsCalendarToRRuleOptions) {
@@ -1141,9 +1165,17 @@ export interface RecurrenceOverridesFromICalOptions {
  * one with a TZID goes through `toEventTime` (without it, the fields are
  * kept, which is right when they are already in the event's zone). An EXDATE
  * maps to `{"excluded": true}`, an RDATE to `{}`, or to `{"duration": …}` for
- * a PERIOD (an explicit end becomes a duration: whole days, then the
- * elapsed time, exact across a time change with `toInstant`). An EXDATE wins over an RDATE for the same key, as it excludes
- * RDATEs too (RFC 5545 section 3.8.5.1).
+ * a PERIOD. A PERIOD in UTC or with a TZID gets the time elapsed in its own
+ * zone, in hours (exact across a time change with `toInstant`), from an
+ * explicit end or from a duration with days or weeks (RFC 5545 adds those
+ * in the value's zone); a floating PERIOD keeps its duration as written.
+ *
+ * An EXDATE excludes RDATEs too (RFC 5545 section 3.8.5.1). It is matched
+ * by instant when both values have one (UTC, or a TZID with `toInstant`),
+ * else by key, before the keys are formed: in the repeated hour of a time
+ * change, two instants have one local time, and excluding one keeps the
+ * other. Two RDATE instants left with one key are reported (lenient: one is
+ * kept; strict: throws), since a key names one occurrence.
  *
  * Lenient by default: other properties and values that cannot be read are
  * left out (reported to `onWarning`); names may be in any case; a value may
@@ -1155,8 +1187,11 @@ export function recurrenceOverridesFromICal(
   { toEventTime, toInstant, strict = false, onWarning }: RecurrenceOverridesFromICalOptions = {}
 ): Record<string, JSCalendarPatch> {
   const issue = issues(strict, onWarning)
-  const rdates = new Map<string, JSCalendarPatch>()
-  const exdates = new Set<string>()
+  // Each value with its key and, when known, its instant: an EXDATE removes
+  // the RDATEs of its instant (two instants can have one local time, in the
+  // repeated hour of a time change), then what is left becomes the keys.
+  const rdates: { key: string; instant?: number; patch: JSCalendarPatch }[] = []
+  const exdates: { key: string; instant?: number }[] = []
   for (const text of properties) {
     for (const line of lines(text)) {
       let p: ReturnType<typeof property>
@@ -1178,64 +1213,79 @@ export function recurrenceOverridesFromICal(
         issue(`Unsupported VALUE=${type} in ${line}`)
         if (type !== 'PERIOD') continue
       }
-      const key = (s: string): string | null => {
-        let v: Time
-        if (strict) {
-          v = icalValue(s)
-          if ((type === 'DATE' && !v.date) || (type === 'DATE-TIME' && v.date)) {
-            fail(`Value ${s} is not VALUE=${type}`)
-          }
-        } else {
-          const t = lenientTime(s, name, issue)
-          if (!t) return null
-          v = t
+      const read = (s: string): Time | null => {
+        if (!strict) return lenientTime(s, name, issue)
+        const v = icalValue(s)
+        if ((type === 'DATE' && !v.date) || (type === 'DATE-TIME' && v.date)) fail(`Value ${s} is not VALUE=${type}`)
+        return v
+      }
+      // The instant of a value (UTC, or with a TZID and toInstant), if known.
+      const zoneOf = (v: Time) => (v.utc ? 'Etc/UTC' : v.date ? undefined : tzid)
+      const instantOf = (v: Time) => {
+        if (v.utc) return (d: Date) => d
+        const zone = zoneOf(v)
+        return zone !== undefined && toInstant ? (d: Date) => toInstant(d, zone) : undefined
+      }
+      const id = (v: Time) => {
+        const zone = zoneOf(v)
+        return {
+          key: formatLocal(zone !== undefined && toEventTime ? toEventTime(v.value, zone) : v.value),
+          instant: instantOf(v)?.(v.value).getTime(),
         }
-        const zone = v.utc ? 'Etc/UTC' : v.date ? undefined : tzid
-        return formatLocal(zone !== undefined && toEventTime ? toEventTime(v.value, zone) : v.value)
       }
       for (const item of p.value.split(',')) {
         if (!item.trim()) continue
         const slash = item.indexOf('/')
         if (name === 'EXDATE') {
-          const k = key(slash < 0 ? item.trim() : item.slice(0, slash).trim())
-          if (k !== null) exdates.add(k)
+          const v = read(slash < 0 ? item.trim() : item.slice(0, slash).trim())
+          if (v) exdates.push(id(v))
         } else if (type === 'PERIOD' || (!strict && slash >= 0)) {
           if (slash < 0) {
             issue(`Invalid PERIOD: ${item}`)
             continue
           }
-          const start = item.slice(0, slash).trim()
+          const a = read(item.slice(0, slash).trim())
+          if (!a) continue
           const end = item.slice(slash + 1).trim()
-          const k = key(start)
-          if (k === null) continue
+          // The local time of a value without a time zone is the event's.
+          const instant = a.utc || zoneOf(a) !== undefined ? instantOf(a) ?? ((d: Date) => d) : undefined
           let duration: string | undefined
           if (end.startsWith('P') || end.startsWith('+P')) {
             const d = end.replace('+', '')
-            if (DURATION.test(d)) duration = d
-            else issue(`Invalid duration: ${end}`)
+            if (!DURATION.test(d)) issue(`Invalid duration: ${end}`)
+            // Days and weeks are added in the value's time zone (RFC 5545
+            // section 3.3.6), so they become the time elapsed there.
+            else duration = instant && /[DW]/.test(d) ? exactDuration(a.value, d, instant) : d
           } else {
-            const a = strict ? icalValue(start) : lenientTime(start, 'RDATE', issue)
             const b = strict ? icalValue(end) : lenientTime(end, 'RDATE', issue)
-            if (a && b) {
+            if (b) {
               if (b.value < a.value) issue(`PERIOD ends before it starts: ${item}`)
-              else {
-                const zone = a.utc || a.date ? undefined : tzid
-                const instant = zone !== undefined && toInstant ? (d: Date) => toInstant(d, zone) : undefined
-                duration = durationBetween(a.value, b.value, instant)
-              }
+              else duration = durationBetween(a.value, b.value, a.date ? undefined : instant)
             }
           }
-          rdates.set(k, duration !== undefined ? { duration } : {})
+          rdates.push({ ...id(a), patch: duration !== undefined ? { duration } : {} })
         } else {
-          const k = key(item.trim())
-          if (k !== null) rdates.set(k, {})
+          const v = read(item.trim())
+          if (v) rdates.push({ ...id(v), patch: {} })
         }
       }
     }
   }
+  const same = (a: { key: string; instant?: number }, b: { key: string; instant?: number }) =>
+    a.instant !== undefined && b.instant !== undefined ? a.instant === b.instant : a.key === b.key
+  const kept = rdates.filter((r) => !exdates.some((e) => same(e, r)))
   const out: Record<string, JSCalendarPatch> = {}
-  for (const k of [...new Set([...rdates.keys(), ...exdates])].sort()) {
-    out[k] = exdates.has(k) ? { excluded: true } : rdates.get(k)
+  for (const k of [...new Set([...rdates.map((r) => r.key), ...exdates.map((e) => e.key)])].sort()) {
+    const here = kept.filter((r) => r.key === k)
+    if (!here.length) {
+      if (exdates.some((e) => e.key === k)) out[k] = { excluded: true }
+      continue
+    }
+    const instants = new Set(here.map((r) => r.instant))
+    if (instants.size > 1) {
+      issue(`RDATE values at ${instants.size} instants have the same local time ${k} in the event's time zone; one is kept`)
+    }
+    out[k] = here[here.length - 1].patch
   }
   return out
 }
@@ -1502,7 +1552,26 @@ const DURATION = /^P(?:\d+W|(?=\d|T\d)(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d
  * across a time change; without it, it is the wall-clock difference.
  */
 function durationBetween(a: Date, b: Date, instant: (d: Date) => Date = (d) => d): string {
-  const s = Math.max(Math.round((instant(b).getTime() - instant(a).getTime()) / 1000), 0)
+  return elapsed((instant(b).getTime() - instant(a).getTime()) / 1000)
+}
+
+/**
+ * A Duration from the wall clock `a` as the time elapsed: its weeks and days
+ * are added to the wall clock (nominal), the rest as exact time (RFC 5545
+ * section 3.3.6, RFC 8984 section 1.4.6), with `instant` the UTC instant of
+ * a wall clock.
+ */
+function exactDuration(a: Date, duration: string, instant: (d: Date) => Date): string {
+  const [date, time = ''] = duration.split('T')
+  const days = Number(/(\d+)W/.exec(date)?.[1] ?? 0) * 7 + Number(/(\d+)D/.exec(date)?.[1] ?? 0)
+  const t = (unit: string) => Number(new RegExp(`(\\d+)${unit}`).exec(time)?.[1] ?? 0)
+  const end = new Date(a.getTime() + days * 86_400_000)
+  return elapsed((instant(end).getTime() - instant(a).getTime()) / 1000 + t('H') * 3600 + t('M') * 60 + t('S'))
+}
+
+/** Seconds as a Duration of hours, minutes and seconds (`PT0S` for none). */
+function elapsed(seconds: number): string {
+  const s = Math.max(Math.round(seconds), 0)
   const h = Math.floor(s / 3600)
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60

@@ -61,16 +61,89 @@ void main() {
       final sw = _wall(source, start), ew = _wall(source, end);
       // A wall clock in a skipped hour does not name the instant: leave it out.
       if (_toInstant(sw, source) != start || _toInstant(ew, source) != end) continue;
-      final line = source == 'Etc/UTC'
-          ? 'RDATE;VALUE=PERIOD:${_ical(start)}Z/${_ical(end)}Z'
-          : 'RDATE;TZID=$source;VALUE=PERIOD:${_ical(sw)}/${_ical(ew)}';
+      // Half the periods end with a duration of days (added to the wall
+      // clock of the source zone, RFC 5545 section 3.3.6) and exact time.
+      final days = random.nextInt(3);
+      final exact = random.nextInt(24 * 60) * 60;
+      final useDuration = random.nextBool();
+      final dayEnd = sw.add(Duration(days: days));
+      if (useDuration && _wall(source, _toInstant(dayEnd, source)) != dayEnd) continue;
+      final expectedEnd =
+          useDuration ? _toInstant(dayEnd, source).add(Duration(seconds: exact)) : end;
+      final utc = source == 'Etc/UTC';
+      final value = utc ? '${_ical(start)}Z' : _ical(sw);
+      final endValue = useDuration
+          ? 'P${days > 0 ? '${days}D' : ''}T${exact ~/ 3600}H${exact % 3600 ~/ 60}M'
+          : utc
+              ? '${_ical(end)}Z'
+              : _ical(ew);
+      final line = utc
+          ? 'RDATE;VALUE=PERIOD:$value/$endValue'
+          : 'RDATE;TZID=$source;VALUE=PERIOD:$value/$endValue';
       test('$i: $line in $eventZone', () {
         final got = recurrenceOverridesFromICal([line],
             toEventTime: _toEventTime(eventZone), toInstant: _toInstant, strict: true);
         final MapEntry(:key, :value) = got.entries.single;
         final s = _toInstant(DateTime.parse('${key}Z'), eventZone);
         expect(_fmt(s), _fmt(start));
-        expect(_fmt(s.add(_duration(value['duration'] as String))), _fmt(end));
+        expect(_fmt(s.add(_duration(value['duration'] as String))), _fmt(expectedEnd));
+      });
+    }
+  });
+
+  group('EXDATE and RDATE in the repeated hour', () {
+    // Zurich on Oct 26, 2025: +02:00 until 01:00Z, then +01:00, so 00:00Z to
+    // 00:59Z and 01:00Z to 01:59Z have the same local times, 02:00 to 02:59.
+    final change = DateTime.utc(2025, 10, 26, 1);
+    String local(DateTime i) => _fmt(i.add(_hour * (i.isBefore(change) ? 2 : 1)));
+    DateTime zurich(DateTime w, String zone) {
+      if (zone == 'Etc/UTC') return w;
+      final before = w.subtract(_hour * 2);
+      return before.isBefore(change) ? before : w.subtract(_hour);
+    }
+
+    DateTime toEventTime(DateTime w, String zone) => DateTime.parse('${local(zurich(w, zone))}Z');
+    final random = Random(_seed + 2);
+    for (var i = 0; i < _runs ~/ 4; i++) {
+      // Values every 30 minutes from 23:00Z to 03:00Z.
+      List<DateTime> pick() {
+        final n = random.nextInt(5);
+        return {
+          for (var k = 0; k < n; k++)
+            DateTime.utc(2025, 10, 25, 23).add(Duration(minutes: 30 * random.nextInt(9)))
+        }.toList()
+          ..sort();
+      }
+
+      final rdates = pick(), exdates = pick();
+      if (rdates.isEmpty && exdates.isEmpty) continue;
+      String values(List<DateTime> d) => d.map((v) => '${_ical(v)}Z').join(',');
+      final lines = [
+        if (rdates.isNotEmpty) 'RDATE:${values(rdates)}',
+        if (exdates.isNotEmpty) 'EXDATE:${values(exdates)}',
+      ];
+      test('$i: ${lines.join(' ')}', () {
+        // An EXDATE removes the RDATE of its instant; what is left is kept.
+        final kept = [
+          for (final r in rdates)
+            if (!exdates.contains(r)) r
+        ];
+        final expected = <String, Object?>{
+          for (final e in exdates) local(e): {'excluded': true},
+          for (final r in kept) local(r): <String, Object?>{},
+        };
+        final collisions = kept.map(local).toSet().length != kept.length;
+        final warnings = <String>[];
+        final got = recurrenceOverridesFromICal(lines,
+            toEventTime: toEventTime, toInstant: zurich, onWarning: warnings.add);
+        expect(got, expected);
+        expect(warnings.isNotEmpty, collisions);
+        if (collisions) {
+          expect(
+              () => recurrenceOverridesFromICal(lines,
+                  toEventTime: toEventTime, toInstant: zurich, strict: true),
+              throwsFormatException);
+        }
       });
     }
   });

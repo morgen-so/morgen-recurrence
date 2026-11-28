@@ -1,7 +1,8 @@
 // The caller-side adapters of the README ("What the caller adapts" and
 // "Replacing the ical.ts converters"), compiled by `npm run typecheck` and
 // checked against the README by test/readme.test.ts, so the README's code
-// compiles. The Morgen types below are stand-ins with the shapes of the
+// compiles; test/readme.test.ts also runs `recurrenceLines` and
+// `ruleForWrite`. The Morgen types below are stand-ins with the shapes of the
 // projects' own types (desktop, Kai, backend, integration service); the
 // moment-timezone and morgen-tz-service declarations are the parts used.
 /* eslint-disable @typescript-eslint/no-unused-vars */
@@ -14,6 +15,7 @@ import {
   OnWarning,
   recurrenceFromICal,
   RecurrenceFromICalOptions,
+  recurrenceToICal,
 } from '../src/index'
 
 // --- Stand-ins for the projects' types and dependencies. -------------------
@@ -65,7 +67,11 @@ declare const moment: {
   tz(value: string, zone: string): { tz(zone: string): { format(f: string): string }; utc(): { format(f: string): string } }
 }
 declare const TimezoneService: { Timezone: new (tz: string) => { ianaName: string } }
-declare const onWarning: OnWarning
+/** The project's warning sink (here: collected, for the test). */
+const warnings: string[] = []
+const onWarning: OnWarning = (message) => {
+  warnings.push(message)
+}
 
 // --- README: "Morgen's rule type". ------------------------------------------
 
@@ -112,6 +118,26 @@ function toIntegrationRule(rule: JSCalendarRecurrenceRule | null): IntegrationRe
   return isCldrCalendar(rscale) ? { ...rest, rscale } : null
 }
 
+/**
+ * A rule for an integration-service write, or null when the service does not
+ * take it: its write validator (passed in, it throws) accepts less than the
+ * library writes, e.g. a fifth weekday or year day 370.
+ */
+function ruleForWrite(
+  rule: JSCalendarRecurrenceRule | null,
+  validate: (rule: IntegrationRecurrenceRule) => void
+): IntegrationRecurrenceRule | null {
+  const r = toIntegrationRule(rule)
+  if (!r) return null
+  try {
+    validate(r)
+    return r
+  } catch (e) {
+    onWarning(`Rule not written: ${(e as Error).message}`)
+    return null
+  }
+}
+
 // --- README: "No recurrence". ------------------------------------------------
 
 function recurrenceRulesOrNull(lines: string[], options: RecurrenceFromICalOptions) {
@@ -137,9 +163,37 @@ const toInstant = (wall: Date, tz: string) =>
 const form = (allDay: boolean, tz?: string | null): ICalDateForm =>
   allDay ? 'date' : !tz ? 'local' : isUtc(tz) ? 'utc' : 'zoned'
 
-// The reverse direction compiles for both rule types.
-declare const stored: MorgenRecurrenceRule
-declare const storedIntegration: IntegrationRecurrenceRule
-const rrules = [jsCalendarToRRule(fromMorgenRule(stored, onWarning)), jsCalendarToRRule(storedIntegration)]
+/** The iCalendar lines of an event's recurrence: rules, overrides or both may be absent. */
+function recurrenceLines(
+  rules: MorgenRecurrenceRule[] | null | undefined,
+  overrides: Record<string, unknown> | null | undefined,
+  allDay: boolean,
+  tz: string | null | undefined,
+  isOccurrence?: (recurrenceId: Date) => boolean
+) {
+  return recurrenceToICal(
+    { recurrenceRules: (rules ?? []).map((r) => fromMorgenRule(r, onWarning)), recurrenceOverrides: overrides },
+    { form: form(allDay, tz), timeZone: tz ?? undefined, toUtc: tz ? toUtc(tz) : undefined, isOccurrence, onWarning }
+  )
+}
 
-export { rrules, fromMorgenRule, toIntegrationRule, toMorgenRule, recurrenceRulesOrNull, toEventTime, toUtc, toInstant, form, onWarning }
+// The reverse direction compiles for both rule types.
+const rrules = (stored: MorgenRecurrenceRule, storedIntegration: IntegrationRecurrenceRule) => [
+  jsCalendarToRRule(fromMorgenRule(stored, onWarning)),
+  jsCalendarToRRule(storedIntegration),
+]
+
+export {
+  rrules,
+  fromMorgenRule,
+  toIntegrationRule,
+  ruleForWrite,
+  toMorgenRule,
+  recurrenceRulesOrNull,
+  recurrenceLines,
+  toEventTime,
+  toUtc,
+  toInstant,
+  form,
+  warnings,
+}
