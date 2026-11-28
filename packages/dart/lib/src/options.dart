@@ -363,53 +363,9 @@ class RRuleOptions {
   ///    March 1); second 60 (a leap second) is read as 59.
   ///  * Without any DTSTART it throws instead of starting the rule "now".
   static RRuleOptions parseString(String s, {DateTime? dtstart}) {
-    DateTime? inlineStart, lineStart;
-    final merged = <String, String>{};
-    // RFC 5545 section 3.1: a line break followed by a space or tab continues
-    // the previous line.
-    final lines = [
-      for (final line in s.replaceAll(RegExp(r'\r?\n[ \t]'), '').split('\n'))
-        if (line.trim().isNotEmpty) line.trim()
-    ];
-    for (final (index, line) in lines.indexed) {
-      final header = RegExp(r'^([A-Z]+?)[:;]').firstMatch(line.toUpperCase())?.group(1);
-      switch (header) {
-        case null || 'RRULE' || 'EXRULE':
-          var body = line.replaceFirst(RegExp(r'^(?:RRULE|EXRULE):', caseSensitive: false), '');
-          final inline = _dtstartPattern.firstMatch(body);
-          DateTime? start;
-          if (inline != null) {
-            start = _parseDtstart(inline);
-            body = body.replaceRange(inline.start, inline.end, '');
-          }
-          // The parts as written, so that parse() sees every value, even one
-          // that a later duplicate overrides (rrule.js parses them all).
-          final attrs = [
-            for (final attr in body.split(';'))
-              if (attr.isNotEmpty && !attr.toUpperCase().startsWith('TZID='))
-                attr.toUpperCase().startsWith('BYWEEKDAY=') ? 'BYDAY${attr.substring(9)}' : attr
-          ];
-          parse(attrs.join(';'), dtstart: DateTime.utc(2000));
-          if (index >= 2) continue;
-          if (start != null) inlineStart = start;
-          for (final attr in attrs) {
-            final eq = attr.indexOf('=');
-            merged[attr.substring(0, eq).toUpperCase()] = attr.substring(eq + 1);
-          }
-        case 'DTSTART':
-          final m = _dtstartPattern.firstMatch(line);
-          if (m == null || m.start != 0 || m.end != line.length) {
-            throw FormatException('Invalid DTSTART: $line');
-          }
-          final start = _parseDtstart(m);
-          if (index < 2) lineStart = start;
-        default:
-          throw FormatException('Unsupported RFC prop $header in $line');
-      }
-    }
-    final begin = inlineStart ?? dtstart ?? lineStart;
-    if (begin == null) throw ArgumentError('No DTSTART in the string and no dtstart given');
-    return parse([for (final e in merged.entries) '${e.key}=${e.value}'].join(';'), dtstart: begin);
+    final (:parts, :start) = parseRRuleParts(s, dtstart: dtstart);
+    if (start == null) throw ArgumentError('No DTSTART in the string and no dtstart given');
+    return parse([for (final e in parts.entries) '${e.key}=${e.value}'].join(';'), dtstart: start);
   }
 
   // parsestring.js parseDtstart: `DTSTART` at the start of the line or after
@@ -465,6 +421,117 @@ class RRuleOptions {
     return d;
   }
 }
+
+/// The rule parts of an iCalendar recurrence string as [RRuleOptions.parseString]
+/// reads it: every line checked, the first two merged (upper-case keys, the
+/// values as written, BYWEEKDAY as BYDAY, TZID left out), and the start
+/// (inline DTSTART, else [dtstart], else a DTSTART line; null without any).
+/// Not exported: the JSCalendar conversion needs the parts as written, e.g.
+/// whether UNTIL ends in `Z`.
+///
+/// With [anyRscale] (conversion), any RSCALE is read and, with a non-Gregorian
+/// one, BYMONTH may have leap months up to 13 (RFC 7529 section 4.2); those
+/// two parts are then checked here, the rest as a Gregorian rule.
+({Map<String, String> parts, DateTime? start}) parseRRuleParts(String s,
+    {DateTime? dtstart, bool anyRscale = false}) {
+  DateTime? inlineStart, lineStart;
+  final merged = <String, String>{};
+  // RFC 5545 section 3.1: a line break followed by a space or tab continues
+  // the previous line.
+  final lines = [
+    for (final line in s.replaceAll(RegExp(r'\r?\n[ \t]'), '').split('\n'))
+      if (line.trim().isNotEmpty) line.trim()
+  ];
+  for (final (index, line) in lines.indexed) {
+    final header = RegExp(r'^([A-Z]+?)[:;]').firstMatch(line.toUpperCase())?.group(1);
+    switch (header) {
+      case null || 'RRULE' || 'EXRULE':
+        var body = line.replaceFirst(ruleNamePattern, '');
+        final inline = RRuleOptions._dtstartPattern.firstMatch(body);
+        DateTime? start;
+        if (inline != null) {
+          start = RRuleOptions._parseDtstart(inline);
+          body = body.replaceRange(inline.start, inline.end, '');
+        }
+        // The parts as written, so that parse() sees every value, even one
+        // that a later duplicate overrides (rrule.js parses them all).
+        final attrs = [
+          for (final attr in body.split(';'))
+            if (attr.isNotEmpty && !attr.toUpperCase().startsWith('TZID='))
+              attr.toUpperCase().startsWith('BYWEEKDAY=') ? 'BYDAY${attr.substring(9)}' : attr
+        ];
+        RRuleOptions.parse((anyRscale ? gregorianCheck(attrs) : attrs).join(';'),
+            dtstart: DateTime.utc(2000));
+        if (index >= 2) continue;
+        if (start != null) inlineStart = start;
+        for (final attr in attrs) {
+          final eq = attr.indexOf('=');
+          merged[attr.substring(0, eq).toUpperCase()] = attr.substring(eq + 1);
+        }
+      case 'DTSTART':
+        final m = RRuleOptions._dtstartPattern.firstMatch(line);
+        if (m == null || m.start != 0 || m.end != line.length) {
+          throw FormatException('Invalid DTSTART: $line');
+        }
+        final start = RRuleOptions._parseDtstart(m);
+        if (index < 2) lineStart = start;
+      default:
+        throw FormatException('Unsupported RFC prop $header in $line');
+    }
+  }
+  return (parts: merged, start: inlineStart ?? dtstart ?? lineStart);
+}
+
+/// An RRULE or EXRULE property name, with its parameters (RFC 5545
+/// rrulparam, e.g. Evolution's `RRULE;X-EVOLUTION-ENDDATE=…:`), and the colon.
+/// Not exported.
+final ruleNamePattern = RegExp(
+    r'^(?:RRULE|EXRULE)(?:;[A-Z0-9-]+=(?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)*:',
+    caseSensitive: false);
+
+/// [attrs] (`NAME=value`) to check as a Gregorian rule: with a non-Gregorian
+/// RSCALE, its name, BYMONTH, BYYEARDAY and BYWEEKNO are checked here
+/// (RFC 7529: up to 13 months, leap months with `L`, and the year days and
+/// weeks of the longest years) and replaced by RSCALE=GREGORIAN without them.
+/// Not exported.
+List<String> gregorianCheck(List<String> attrs) {
+  String? value(String name) {
+    for (final a in attrs) {
+      if (a.toUpperCase().startsWith('$name=')) return a.substring(name.length + 1);
+    }
+    return null;
+  }
+
+  final rscale = value('RSCALE');
+  if (rscale == null || rscale.toUpperCase() == 'GREGORIAN') return attrs;
+  if (!RegExp(r'^[A-Za-z0-9-]+$').hasMatch(rscale)) {
+    throw FormatException('Unsupported RSCALE: $rscale');
+  }
+  if (value('BYMONTH') case final String months) {
+    for (final m in months.split(',')) {
+      final n = RegExp(r'^\+?(\d+)(L?)$', caseSensitive: false).firstMatch(m);
+      final v = n == null ? 0 : int.parse(n.group(1)!);
+      if (v < 1 || v > 13) throw FormatException('Invalid BYMONTH: $months');
+    }
+  }
+  for (final (name, max) in [('BYYEARDAY', maxYearDay.other), ('BYWEEKNO', maxWeekNo.other)]) {
+    for (final e in value(name)?.split(',') ?? const <String>[]) {
+      final n = int.tryParse(e.replaceFirst('+', ''));
+      if (n == null || n == 0 || n.abs() > max) throw FormatException('Invalid $name: $e');
+    }
+  }
+  bool dropped(String a) => ['BYMONTH=', 'BYYEARDAY=', 'BYWEEKNO='].any(a.toUpperCase().startsWith);
+  return [
+    for (final a in attrs)
+      if (a.toUpperCase().startsWith('RSCALE=')) 'RSCALE=GREGORIAN' else if (!dropped(a)) a
+  ];
+}
+
+/// The largest year day and week number: RFC 5545 for Gregorian rules, and
+/// for other calendars (RFC 7529) those of the longest years (a Hebrew or
+/// Chinese leap year has up to 385 days). Not exported.
+const maxYearDay = (gregorian: 366, other: 385);
+const maxWeekNo = (gregorian: 53, other: 55); // Not exported.
 
 /// Floating copy of [d] (wall-clock fields as UTC), truncated to milliseconds
 /// like JavaScript dates.

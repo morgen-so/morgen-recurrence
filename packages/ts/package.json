@@ -1,6 +1,6 @@
 {
   "name": "@morgen-so/rrule",
-  "version": "2.8.0-morgen.2",
+  "version": "2.8.0-morgen.3",
   "description": "Morgen's fork of rrule.js 2.8.0: RFC 5545 recurrence rule expansion with bug fixes, bounded iteration and pluggable time zones.",
   "license": "BSD-3-Clause",
   "author": "Jakub Roztocil, Lars Schöning, David Golightly; fork by Morgen AG",

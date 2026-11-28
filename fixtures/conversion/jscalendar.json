@@ -1,0 +1,4035 @@
+{
+ "schema": 1,
+ "name": "jscalendar-conversion",
+ "description": "Hand-written cases for the iCalendar <-> JSCalendar recurrence conversion (draft-ietf-calext-jscalendar-icalendar-31 sections 2.3.18, 2.3.30, 2.3.33 and 3.2). `fn` is the function, `input` its first argument, `options` the rest; `expected` is the result, or {\"error\": true}. `eventTimeZone` is the event's JSCalendar timeZone (the `timeZone` option). `offsets` gives the time zones of a case, from which the `zones` option is built: per zone a fixed UTC offset, or a list of the offset before the first change and then [UTC instant of a change, offset from then]; without `offsets`, no `zones` is passed. `occurrences` lists the recurrence ids the rule generates (isOccurrence). Ids starting with `draft-` are the draft's own figures. `strict` runs the strict mode; otherwise the default (lenient) mode runs, and `warnings`, when given, is the number of warnings expected (none otherwise).",
+ "generatedBy": "hand-written",
+ "cases": [
+  {
+   "id": "draft-figure-70",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;INTERVAL=2;BYMONTH=1;BYDAY=SU;BYHOUR=8,9;BYMINUTE=30;UNTIL=20240930T120000Z",
+   "options": {
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+02:00"
+    }
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "interval": 2,
+    "byMonth": [
+     "1"
+    ],
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "su"
+     }
+    ],
+    "byHour": [
+     8,
+     9
+    ],
+    "byMinute": [
+     30
+    ],
+    "until": "2024-09-30T14:00:00"
+   }
+  },
+  {
+   "id": "until-date",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=DAILY;UNTIL=20240131",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2024-01-31T00:00:00"
+   }
+  },
+  {
+   "id": "until-local",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20240131T090000",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2024-01-31T09:00:00"
+   }
+  },
+  {
+   "id": "until-utc-without-time-zone-warns",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20240131T090000Z",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2024-01-31T09:00:00"
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "until-utc-without-time-zone-strict-error",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20240131T090000Z",
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "until-utc-in-utc-event",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20240131T090000Z",
+   "options": {
+    "eventTimeZone": "UTC",
+    "strict": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2024-01-31T09:00:00"
+   }
+  },
+  {
+   "id": "until-utc-to-event-zone-across-midnight",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20240131T230000Z",
+   "options": {
+    "eventTimeZone": "Asia/Tokyo",
+    "offsets": {
+     "Asia/Tokyo": "+09:00"
+    }
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2024-02-01T08:00:00"
+   }
+  },
+  {
+   "id": "dtstart-line-ignored-weekday-parts",
+   "fn": "rruleToJsCalendar",
+   "input": "DTSTART;TZID=Europe/Berlin:20240101T090000\nRRULE:FREQ=WEEKLY;BYDAY=MO,-1FR;WKST=SU;COUNT=5",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "fr",
+      "nthOfPeriod": -1
+     }
+    ],
+    "firstDayOfWeek": "su",
+    "count": 5
+   }
+  },
+  {
+   "id": "interval-as-written",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=MONTHLY;INTERVAL=1;BYMONTHDAY=-1;BYSETPOS=-1",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "monthly",
+    "interval": 1,
+    "byMonthDay": [
+     -1
+    ],
+    "bySetPosition": [
+     -1
+    ]
+   }
+  },
+  {
+   "id": "rscale-and-skip",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=MONTHLY;BYMONTHDAY=31;RSCALE=GREGORIAN;SKIP=BACKWARD",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "monthly",
+    "rscale": "gregorian",
+    "skip": "backward",
+    "byMonthDay": [
+     31
+    ]
+   }
+  },
+  {
+   "id": "year-parts",
+   "fn": "rruleToJsCalendar",
+   "input": "freq=yearly;byweekno=1,-1;byyearday=100;bysecond=0,30",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "byWeekNo": [
+     1,
+     -1
+    ],
+    "byYearDay": [
+     100
+    ],
+    "bySecond": [
+     0,
+     30
+    ]
+   }
+  },
+  {
+   "id": "literal-yearly-month-day",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYMONTHDAY=15",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "byMonthDay": [
+     15
+    ]
+   }
+  },
+  {
+   "id": "keep-yearly-month-day",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYMONTHDAY=15",
+   "options": {
+    "keepRRuleMeaning": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "byMonthDay": [
+     15
+    ],
+    "byMonth": [
+     "1",
+     "2",
+     "3",
+     "4",
+     "5",
+     "6",
+     "7",
+     "8",
+     "9",
+     "10",
+     "11",
+     "12"
+    ]
+   }
+  },
+  {
+   "id": "keep-weekly-month-day",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=WEEKLY;BYMONTHDAY=1",
+   "options": {
+    "keepRRuleMeaning": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "byMonthDay": [
+     1
+    ],
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "tu"
+     },
+     {
+      "@type": "NDay",
+      "day": "we"
+     },
+     {
+      "@type": "NDay",
+      "day": "th"
+     },
+     {
+      "@type": "NDay",
+      "day": "fr"
+     },
+     {
+      "@type": "NDay",
+      "day": "sa"
+     },
+     {
+      "@type": "NDay",
+      "day": "su"
+     }
+    ]
+   }
+  },
+  {
+   "id": "keep-monthly-year-day",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=MONTHLY;BYYEARDAY=100",
+   "options": {
+    "keepRRuleMeaning": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "monthly",
+    "byYearDay": [
+     100
+    ],
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "tu"
+     },
+     {
+      "@type": "NDay",
+      "day": "we"
+     },
+     {
+      "@type": "NDay",
+      "day": "th"
+     },
+     {
+      "@type": "NDay",
+      "day": "fr"
+     },
+     {
+      "@type": "NDay",
+      "day": "sa"
+     },
+     {
+      "@type": "NDay",
+      "day": "su"
+     }
+    ]
+   }
+  },
+  {
+   "id": "keep-yearly-week-number",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYWEEKNO=20",
+   "options": {
+    "keepRRuleMeaning": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "byWeekNo": [
+     20
+    ],
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "tu"
+     },
+     {
+      "@type": "NDay",
+      "day": "we"
+     },
+     {
+      "@type": "NDay",
+      "day": "th"
+     },
+     {
+      "@type": "NDay",
+      "day": "fr"
+     },
+     {
+      "@type": "NDay",
+      "day": "sa"
+     },
+     {
+      "@type": "NDay",
+      "day": "su"
+     }
+    ]
+   }
+  },
+  {
+   "id": "keep-weekly-drops-nth",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=WEEKLY;BYDAY=2MO,TU",
+   "options": {
+    "keepRRuleMeaning": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "tu"
+     }
+    ]
+   }
+  },
+  {
+   "id": "keep-yearly-nth-weekday-by-year-day",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYMONTHDAY=15;BYDAY=3TU",
+   "options": {
+    "keepRRuleMeaning": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "byMonthDay": [
+     15
+    ],
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "tu",
+      "nthOfPeriod": 3
+     }
+    ],
+    "byYearDay": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20,
+     21,
+     22,
+     23,
+     24,
+     25,
+     26,
+     27,
+     28,
+     29,
+     30,
+     31,
+     32,
+     33,
+     34,
+     35,
+     36,
+     37,
+     38,
+     39,
+     40,
+     41,
+     42,
+     43,
+     44,
+     45,
+     46,
+     47,
+     48,
+     49,
+     50,
+     51,
+     52,
+     53,
+     54,
+     55,
+     56,
+     57,
+     58,
+     59,
+     60,
+     61,
+     62,
+     63,
+     64,
+     65,
+     66,
+     67,
+     68,
+     69,
+     70,
+     71,
+     72,
+     73,
+     74,
+     75,
+     76,
+     77,
+     78,
+     79,
+     80,
+     81,
+     82,
+     83,
+     84,
+     85,
+     86,
+     87,
+     88,
+     89,
+     90,
+     91,
+     92,
+     93,
+     94,
+     95,
+     96,
+     97,
+     98,
+     99,
+     100,
+     101,
+     102,
+     103,
+     104,
+     105,
+     106,
+     107,
+     108,
+     109,
+     110,
+     111,
+     112,
+     113,
+     114,
+     115,
+     116,
+     117,
+     118,
+     119,
+     120,
+     121,
+     122,
+     123,
+     124,
+     125,
+     126,
+     127,
+     128,
+     129,
+     130,
+     131,
+     132,
+     133,
+     134,
+     135,
+     136,
+     137,
+     138,
+     139,
+     140,
+     141,
+     142,
+     143,
+     144,
+     145,
+     146,
+     147,
+     148,
+     149,
+     150,
+     151,
+     152,
+     153,
+     154,
+     155,
+     156,
+     157,
+     158,
+     159,
+     160,
+     161,
+     162,
+     163,
+     164,
+     165,
+     166,
+     167,
+     168,
+     169,
+     170,
+     171,
+     172,
+     173,
+     174,
+     175,
+     176,
+     177,
+     178,
+     179,
+     180,
+     181,
+     182,
+     183,
+     184,
+     185,
+     186,
+     187,
+     188,
+     189,
+     190,
+     191,
+     192,
+     193,
+     194,
+     195,
+     196,
+     197,
+     198,
+     199,
+     200,
+     201,
+     202,
+     203,
+     204,
+     205,
+     206,
+     207,
+     208,
+     209,
+     210,
+     211,
+     212,
+     213,
+     214,
+     215,
+     216,
+     217,
+     218,
+     219,
+     220,
+     221,
+     222,
+     223,
+     224,
+     225,
+     226,
+     227,
+     228,
+     229,
+     230,
+     231,
+     232,
+     233,
+     234,
+     235,
+     236,
+     237,
+     238,
+     239,
+     240,
+     241,
+     242,
+     243,
+     244,
+     245,
+     246,
+     247,
+     248,
+     249,
+     250,
+     251,
+     252,
+     253,
+     254,
+     255,
+     256,
+     257,
+     258,
+     259,
+     260,
+     261,
+     262,
+     263,
+     264,
+     265,
+     266,
+     267,
+     268,
+     269,
+     270,
+     271,
+     272,
+     273,
+     274,
+     275,
+     276,
+     277,
+     278,
+     279,
+     280,
+     281,
+     282,
+     283,
+     284,
+     285,
+     286,
+     287,
+     288,
+     289,
+     290,
+     291,
+     292,
+     293,
+     294,
+     295,
+     296,
+     297,
+     298,
+     299,
+     300,
+     301,
+     302,
+     303,
+     304,
+     305,
+     306,
+     307,
+     308,
+     309,
+     310,
+     311,
+     312,
+     313,
+     314,
+     315,
+     316,
+     317,
+     318,
+     319,
+     320,
+     321,
+     322,
+     323,
+     324,
+     325,
+     326,
+     327,
+     328,
+     329,
+     330,
+     331,
+     332,
+     333,
+     334,
+     335,
+     336,
+     337,
+     338,
+     339,
+     340,
+     341,
+     342,
+     343,
+     344,
+     345,
+     346,
+     347,
+     348,
+     349,
+     350,
+     351,
+     352,
+     353,
+     354,
+     355,
+     356,
+     357,
+     358,
+     359,
+     360,
+     361,
+     362,
+     363,
+     364,
+     365,
+     366
+    ]
+   }
+  },
+  {
+   "id": "keep-yearly-nth-weekday-with-skip-warns",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYMONTHDAY=31;BYDAY=-2FR;RSCALE=GREGORIAN;SKIP=FORWARD",
+   "options": {
+    "keepRRuleMeaning": true,
+    "warnings": 1
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "rscale": "gregorian",
+    "skip": "forward",
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "fr",
+      "nthOfPeriod": -2
+     }
+    ],
+    "byMonthDay": [
+     31
+    ],
+    "byYearDay": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8,
+     9,
+     10,
+     11,
+     12,
+     13,
+     14,
+     15,
+     16,
+     17,
+     18,
+     19,
+     20,
+     21,
+     22,
+     23,
+     24,
+     25,
+     26,
+     27,
+     28,
+     29,
+     30,
+     31,
+     32,
+     33,
+     34,
+     35,
+     36,
+     37,
+     38,
+     39,
+     40,
+     41,
+     42,
+     43,
+     44,
+     45,
+     46,
+     47,
+     48,
+     49,
+     50,
+     51,
+     52,
+     53,
+     54,
+     55,
+     56,
+     57,
+     58,
+     59,
+     60,
+     61,
+     62,
+     63,
+     64,
+     65,
+     66,
+     67,
+     68,
+     69,
+     70,
+     71,
+     72,
+     73,
+     74,
+     75,
+     76,
+     77,
+     78,
+     79,
+     80,
+     81,
+     82,
+     83,
+     84,
+     85,
+     86,
+     87,
+     88,
+     89,
+     90,
+     91,
+     92,
+     93,
+     94,
+     95,
+     96,
+     97,
+     98,
+     99,
+     100,
+     101,
+     102,
+     103,
+     104,
+     105,
+     106,
+     107,
+     108,
+     109,
+     110,
+     111,
+     112,
+     113,
+     114,
+     115,
+     116,
+     117,
+     118,
+     119,
+     120,
+     121,
+     122,
+     123,
+     124,
+     125,
+     126,
+     127,
+     128,
+     129,
+     130,
+     131,
+     132,
+     133,
+     134,
+     135,
+     136,
+     137,
+     138,
+     139,
+     140,
+     141,
+     142,
+     143,
+     144,
+     145,
+     146,
+     147,
+     148,
+     149,
+     150,
+     151,
+     152,
+     153,
+     154,
+     155,
+     156,
+     157,
+     158,
+     159,
+     160,
+     161,
+     162,
+     163,
+     164,
+     165,
+     166,
+     167,
+     168,
+     169,
+     170,
+     171,
+     172,
+     173,
+     174,
+     175,
+     176,
+     177,
+     178,
+     179,
+     180,
+     181,
+     182,
+     183,
+     184,
+     185,
+     186,
+     187,
+     188,
+     189,
+     190,
+     191,
+     192,
+     193,
+     194,
+     195,
+     196,
+     197,
+     198,
+     199,
+     200,
+     201,
+     202,
+     203,
+     204,
+     205,
+     206,
+     207,
+     208,
+     209,
+     210,
+     211,
+     212,
+     213,
+     214,
+     215,
+     216,
+     217,
+     218,
+     219,
+     220,
+     221,
+     222,
+     223,
+     224,
+     225,
+     226,
+     227,
+     228,
+     229,
+     230,
+     231,
+     232,
+     233,
+     234,
+     235,
+     236,
+     237,
+     238,
+     239,
+     240,
+     241,
+     242,
+     243,
+     244,
+     245,
+     246,
+     247,
+     248,
+     249,
+     250,
+     251,
+     252,
+     253,
+     254,
+     255,
+     256,
+     257,
+     258,
+     259,
+     260,
+     261,
+     262,
+     263,
+     264,
+     265,
+     266,
+     267,
+     268,
+     269,
+     270,
+     271,
+     272,
+     273,
+     274,
+     275,
+     276,
+     277,
+     278,
+     279,
+     280,
+     281,
+     282,
+     283,
+     284,
+     285,
+     286,
+     287,
+     288,
+     289,
+     290,
+     291,
+     292,
+     293,
+     294,
+     295,
+     296,
+     297,
+     298,
+     299,
+     300,
+     301,
+     302,
+     303,
+     304,
+     305,
+     306,
+     307,
+     308,
+     309,
+     310,
+     311,
+     312,
+     313,
+     314,
+     315,
+     316,
+     317,
+     318,
+     319,
+     320,
+     321,
+     322,
+     323,
+     324,
+     325,
+     326,
+     327,
+     328,
+     329,
+     330,
+     331,
+     332,
+     333,
+     334,
+     335,
+     336,
+     337,
+     338,
+     339,
+     340,
+     341,
+     342,
+     343,
+     344,
+     345,
+     346,
+     347,
+     348,
+     349,
+     350,
+     351,
+     352,
+     353,
+     354,
+     355,
+     356,
+     357,
+     358,
+     359,
+     360,
+     361,
+     362,
+     363,
+     364,
+     365,
+     366
+    ]
+   }
+  },
+  {
+   "id": "keep-unchanged-with-month",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=15",
+   "options": {
+    "keepRRuleMeaning": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "byMonth": [
+     "3"
+    ],
+    "byMonthDay": [
+     15
+    ]
+   }
+  },
+  {
+   "id": "error-no-freq",
+   "fn": "rruleToJsCalendar",
+   "input": "BYDAY=MO",
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-interval-0",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;INTERVAL=0",
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-month-day-32",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=MONTHLY;BYMONTHDAY=32",
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-impossible-until",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20240230",
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-exdate-line",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=DAILY\nEXDATE:20240102T090000Z",
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "draft-figure-70-back",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "interval": 2,
+    "byMonth": [
+     "1"
+    ],
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "su"
+     }
+    ],
+    "byHour": [
+     8,
+     9
+    ],
+    "byMinute": [
+     30
+    ],
+    "until": "2024-09-30T14:00:00"
+   },
+   "options": {
+    "untilForm": "zoned",
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+02:00"
+    }
+   },
+   "expected": "FREQ=YEARLY;INTERVAL=2;UNTIL=20240930T120000Z;BYMONTH=1;BYDAY=SU;BYHOUR=8,9;BYMINUTE=30"
+  },
+  {
+   "id": "until-form-date",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31T00:00:00"
+   },
+   "options": {
+    "untilForm": "date"
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240131"
+  },
+  {
+   "id": "until-form-local",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31T09:00:00"
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240131T090000"
+  },
+  {
+   "id": "until-form-utc",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31T09:00:00"
+   },
+   "options": {
+    "untilForm": "utc"
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240131T090000Z"
+  },
+  {
+   "id": "until-form-zoned-across-midnight",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-02-01T08:00:00"
+   },
+   "options": {
+    "untilForm": "zoned",
+    "eventTimeZone": "Asia/Tokyo",
+    "offsets": {
+     "Asia/Tokyo": "+09:00"
+    }
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240131T230000Z"
+  },
+  {
+   "id": "interval-1-left-out",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "interval": 1,
+    "byDay": [
+     {
+      "day": "mo"
+     },
+     {
+      "day": "fr",
+      "nthOfPeriod": -1
+     }
+    ],
+    "firstDayOfWeek": "su",
+    "count": 5
+   },
+   "expected": "FREQ=WEEKLY;COUNT=5;BYDAY=MO,-1FR;WKST=SU",
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "weekly-with-month-day-not-in-rfc5545-warns",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "day": "mo"
+     }
+    ],
+    "byMonthDay": [
+     15
+    ]
+   },
+   "options": {
+    "warnings": 1
+   },
+   "expected": "FREQ=WEEKLY;BYMONTHDAY=15;BYDAY=MO"
+  },
+  {
+   "id": "weekly-with-month-day-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "day": "mo"
+     }
+    ],
+    "byMonthDay": [
+     15
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "monthly-with-year-day-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "byYearDay": [
+     100
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "daily-with-week-number-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "byWeekNo": [
+     20
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "yearly-with-week-number-and-nth-day-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "byWeekNo": [
+     20
+    ],
+    "byDay": [
+     {
+      "day": "mo",
+      "nthOfPeriod": 1
+     }
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "monthly-with-nth-day-is-in-rfc5545",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "byDay": [
+     {
+      "day": "mo",
+      "nthOfPeriod": -1
+     }
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": "FREQ=MONTHLY;BYDAY=-1MO"
+  },
+  {
+   "id": "set-position-alone-not-in-rfc5545-warns",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "bySetPosition": [
+     2
+    ]
+   },
+   "options": {
+    "warnings": 1
+   },
+   "expected": "FREQ=MONTHLY;BYSETPOS=2"
+  },
+  {
+   "id": "set-position-alone-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "bySetPosition": [
+     2
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "set-position-with-implicit-month-day",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "bySetPosition": [
+     1
+    ]
+   },
+   "options": {
+    "strict": true,
+    "start": "2024-01-15T09:00:00",
+    "keepJsCalendarMeaning": true
+   },
+   "expected": "FREQ=MONTHLY;BYMONTHDAY=15;BYSETPOS=1"
+  },
+  {
+   "id": "hour-for-date-start-not-in-rfc5545-warns",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "byHour": [
+     9
+    ]
+   },
+   "options": {
+    "untilForm": "date",
+    "warnings": 1
+   },
+   "expected": "FREQ=DAILY;BYHOUR=9"
+  },
+  {
+   "id": "hour-for-date-start-not-in-rfc5545-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "byHour": [
+     9
+    ]
+   },
+   "options": {
+    "untilForm": "date",
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "hour-for-timed-start-is-in-rfc5545",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "byHour": [
+     9
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": "FREQ=DAILY;BYHOUR=9"
+  },
+  {
+   "id": "skip-adds-rscale",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "@type": "RecurrenceRule",
+    "frequency": "monthly",
+    "byMonthDay": [
+     31
+    ],
+    "skip": "backward"
+   },
+   "expected": "FREQ=MONTHLY;BYMONTHDAY=31;RSCALE=GREGORIAN;SKIP=BACKWARD"
+  },
+  {
+   "id": "rscale-leap-month",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "rscale": "hebrew",
+    "byMonth": [
+     "5L"
+    ],
+    "byMonthDay": [
+     8
+    ]
+   },
+   "expected": "FREQ=YEARLY;BYMONTH=5L;BYMONTHDAY=8;RSCALE=HEBREW"
+  },
+  {
+   "id": "all-parts-order",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "bySetPosition": [
+     1,
+     -1
+    ],
+    "bySecond": [
+     0
+    ],
+    "byMinute": [
+     15
+    ],
+    "byHour": [
+     9
+    ],
+    "byYearDay": [
+     1
+    ],
+    "byWeekNo": [
+     1
+    ],
+    "byMonth": [
+     "1",
+     "2"
+    ],
+    "byMonthDay": [
+     1,
+     -1
+    ],
+    "byDay": [
+     {
+      "day": "mo"
+     }
+    ],
+    "count": 3,
+    "interval": 2,
+    "frequency": "yearly"
+   },
+   "expected": "FREQ=YEARLY;INTERVAL=2;COUNT=3;BYMONTH=1,2;BYWEEKNO=1;BYYEARDAY=1;BYMONTHDAY=1,-1;BYDAY=MO;BYHOUR=9;BYMINUTE=15;BYSECOND=0;BYSETPOS=1,-1"
+  },
+  {
+   "id": "literal-yearly-month-day-back",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "byMonthDay": [
+     15
+    ]
+   },
+   "expected": "FREQ=YEARLY;BYMONTHDAY=15"
+  },
+  {
+   "id": "keep-jscalendar-yearly-month-day",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "byMonthDay": [
+     15
+    ]
+   },
+   "options": {
+    "keepJsCalendarMeaning": true,
+    "start": "2024-03-15T09:00:00"
+   },
+   "expected": "FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=15"
+  },
+  {
+   "id": "keep-jscalendar-weekly",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "interval": 2
+   },
+   "options": {
+    "keepJsCalendarMeaning": true,
+    "start": "2024-01-03T09:00:00"
+   },
+   "expected": "FREQ=WEEKLY;INTERVAL=2;BYDAY=WE"
+  },
+  {
+   "id": "keep-jscalendar-yearly-week-number",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "byWeekNo": [
+     1
+    ]
+   },
+   "options": {
+    "keepJsCalendarMeaning": true,
+    "start": "2024-01-03T09:00:00"
+   },
+   "expected": "FREQ=YEARLY;BYWEEKNO=1;BYDAY=WE"
+  },
+  {
+   "id": "empty-arrays-absent",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "byDay": [],
+    "byMonthDay": []
+   },
+   "expected": "FREQ=DAILY"
+  },
+  {
+   "id": "month-numbers",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "byMonth": [
+     6
+    ]
+   },
+   "expected": "FREQ=YEARLY;BYMONTH=6"
+  },
+  {
+   "id": "error-frequency",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "fortnightly"
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-no-frequency",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "interval": 2
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-interval-0-back",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "interval": 0
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-day",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "day": "xx"
+     }
+    ]
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-nth-0",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "byDay": [
+     {
+      "day": "mo",
+      "nthOfPeriod": 0
+     }
+    ]
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-month-day-0",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "byMonthDay": [
+     0
+    ]
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-hour-24",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "byHour": [
+     24
+    ]
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-until-date-only",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31"
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-until-utc",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31T09:00:00Z"
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-type",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "@type": "Event",
+    "frequency": "daily"
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-skip",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "monthly",
+    "skip": "sometimes"
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "draft-figure-47",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20230801T130000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Etc/UTC"
+   },
+   "expected": {
+    "2023-08-01T13:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "draft-figure-66",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20230805T170000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Etc/UTC"
+   },
+   "expected": {
+    "2023-08-05T17:00:00": {}
+   }
+  },
+  {
+   "id": "draft-figure-67",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20231223T150000Z/PT2H"
+   ],
+   "options": {
+    "eventTimeZone": "Etc/UTC"
+   },
+   "expected": {
+    "2023-12-23T15:00:00": {
+     "duration": "PT2H"
+    }
+   }
+  },
+  {
+   "id": "exdate-other-zone",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE;TZID=America/New_York:20240102T090000,20240103T090000"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+01:00",
+     "America/New_York": "-05:00"
+    }
+   },
+   "expected": {
+    "2024-01-02T15:00:00": {
+     "excluded": true
+    },
+    "2024-01-03T15:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "exdate-utc-to-event-zone",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20240102T080000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+01:00"
+    }
+   },
+   "expected": {
+    "2024-01-02T09:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "exdate-quoted-tzid",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE;TZID=\"America/New_York\":20240102T090000"
+   ],
+   "options": {
+    "eventTimeZone": "America/New_York",
+    "offsets": {
+     "America/New_York": "-05:00"
+    }
+   },
+   "expected": {
+    "2024-01-02T09:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "exdate-date",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE;VALUE=DATE:20240102,20240109"
+   ],
+   "expected": {
+    "2024-01-02T00:00:00": {
+     "excluded": true
+    },
+    "2024-01-09T00:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "exdate-wins-over-rdate",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20240105T090000",
+    "EXDATE:20240105T090000"
+   ],
+   "expected": {
+    "2024-01-05T09:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "period-with-end",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20240105T090000Z/20240106T103000Z"
+   ],
+   "expected": {
+    "2024-01-05T09:00:00": {
+     "duration": "PT25H30M"
+    }
+   },
+   "options": {
+    "eventTimeZone": "Etc/UTC"
+   }
+  },
+  {
+   "id": "folded-lines-sorted-keys",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20240108T090000,\r\n 20240101T090000\r\nRDATE:20240103T090000"
+   ],
+   "expected": {
+    "2024-01-01T09:00:00": {
+     "excluded": true
+    },
+    "2024-01-03T09:00:00": {},
+    "2024-01-08T09:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "error-not-a-date-property",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RRULE:FREQ=DAILY"
+   ],
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-impossible-exdate",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20240230T090000"
+   ],
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-exdate-period",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE;VALUE=PERIOD:20240105T090000Z/PT1H"
+   ],
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-date-with-time",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE;VALUE=DATE:20240101T090000"
+   ],
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "error-period-backwards",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20240105T090000Z/20240105T080000Z"
+   ],
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "draft-figure-47-back",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2023-08-01T13:00:00": {
+     "excluded": true
+    }
+   },
+   "options": {
+    "form": "utc"
+   },
+   "expected": {
+    "properties": [
+     "EXDATE:20230801T130000Z"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "draft-figure-66-back",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2023-08-05T17:00:00": {}
+   },
+   "options": {
+    "form": "utc"
+   },
+   "expected": {
+    "properties": [
+     "RDATE:20230805T170000Z"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "draft-figure-67-back",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2023-12-23T15:00:00": {
+     "duration": "PT2H"
+    }
+   },
+   "options": {
+    "form": "utc",
+    "occurrences": []
+   },
+   "expected": {
+    "properties": [
+     "RDATE;VALUE=PERIOD:20231223T150000Z/PT2H"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "zoned-without-occurrences",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-09T09:00:00": {
+     "title": "Moved"
+    },
+    "2024-01-05T09:00:00": {},
+    "2024-01-02T09:00:00": {
+     "excluded": true
+    }
+   },
+   "options": {
+    "form": "zoned",
+    "timeZone": "Europe/Berlin"
+   },
+   "expected": {
+    "properties": [
+     "EXDATE;TZID=Europe/Berlin:20240102T090000",
+     "RDATE;TZID=Europe/Berlin:20240105T090000"
+    ],
+    "overrides": [
+     "2024-01-09T09:00:00"
+    ]
+   }
+  },
+  {
+   "id": "zoned-with-occurrences",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-09T09:00:00": {
+     "title": "Moved"
+    },
+    "2024-01-05T09:00:00": {},
+    "2024-01-02T09:00:00": {
+     "excluded": true
+    },
+    "2024-01-12T09:00:00": {
+     "duration": "PT2H"
+    }
+   },
+   "options": {
+    "form": "zoned",
+    "timeZone": "Europe/Berlin",
+    "occurrences": [
+     "2024-01-02T09:00:00",
+     "2024-01-05T09:00:00",
+     "2024-01-12T09:00:00"
+    ]
+   },
+   "expected": {
+    "properties": [
+     "EXDATE;TZID=Europe/Berlin:20240102T090000",
+     "RDATE;TZID=Europe/Berlin:20240109T090000"
+    ],
+    "overrides": [
+     "2024-01-09T09:00:00",
+     "2024-01-12T09:00:00"
+    ]
+   }
+  },
+  {
+   "id": "zoned-period",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-05T09:00:00": {
+     "duration": "PT1H30M"
+    }
+   },
+   "options": {
+    "form": "zoned",
+    "timeZone": "America/New_York",
+    "occurrences": []
+   },
+   "expected": {
+    "properties": [
+     "RDATE;VALUE=PERIOD;TZID=America/New_York:20240105T090000/PT1H30M"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "local-form",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-05T09:00:00": {},
+    "2024-01-02T09:00:00": {
+     "excluded": true
+    }
+   },
+   "expected": {
+    "properties": [
+     "EXDATE:20240102T090000",
+     "RDATE:20240105T090000"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "date-form",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-02T00:00:00": {
+     "excluded": true
+    },
+    "2024-01-05T00:00:00": {
+     "duration": "P2D"
+    }
+   },
+   "options": {
+    "form": "date"
+   },
+   "expected": {
+    "properties": [
+     "EXDATE;VALUE=DATE:20240102",
+     "RDATE;VALUE=DATE:20240105"
+    ],
+    "overrides": [
+     "2024-01-05T00:00:00"
+    ]
+   }
+  },
+  {
+   "id": "error-date-form-with-time",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-02T09:00:00": {
+     "excluded": true
+    }
+   },
+   "options": {
+    "form": "date",
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "error-recurrence-id",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-02": {
+     "excluded": true
+    }
+   },
+   "expected": {
+    "error": true
+   },
+   "options": {
+    "strict": true
+   }
+  },
+  {
+   "id": "lenient-no-freq",
+   "fn": "rruleToJsCalendar",
+   "input": "BYDAY=MO",
+   "expected": null,
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "lenient-interval-0",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;INTERVAL=0",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily"
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "lenient-month-day-32",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=MONTHLY;BYMONTHDAY=1,32",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "monthly",
+    "byMonthDay": [
+     1
+    ]
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "lenient-impossible-until",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20240230",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2024-03-01T00:00:00"
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "lenient-exdate-line-in-rule",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=DAILY\nEXDATE:20240102T090000Z",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily"
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "quirk-trailing-semicolon",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "we"
+     }
+    ]
+   }
+  },
+  {
+   "id": "quirk-x-part",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=WEEKLY;BYDAY=MO;X-EVOLUTION-ENDDATE=20240301T090000Z",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     }
+    ]
+   }
+  },
+  {
+   "id": "quirk-lower-case",
+   "fn": "rruleToJsCalendar",
+   "input": "rrule:freq=weekly;wkst=su;byday=mo,-1fr",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "firstDayOfWeek": "su",
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "fr",
+      "nthOfPeriod": -1
+     }
+    ]
+   }
+  },
+  {
+   "id": "quirk-spaces",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE: FREQ=DAILY ; COUNT = 3",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "count": 3
+   }
+  },
+  {
+   "id": "quirk-fractional-until",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=DAILY;UNTIL=20240301T090000.000Z",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2024-03-01T09:00:00"
+   },
+   "options": {
+    "eventTimeZone": "Etc/UTC"
+   }
+  },
+  {
+   "id": "quirk-unknown-part",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;COLOR=RED",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily"
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "quirk-bad-day-dropped",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=WEEKLY;BYDAY=MO,XX,TU",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "@type": "NDay",
+      "day": "mo"
+     },
+     {
+      "@type": "NDay",
+      "day": "tu"
+     }
+    ]
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "quirk-inline-dtstart",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=WEEKLY;DTSTART;TZID=Europe/Berlin:20240101T090000;COUNT=2",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "weekly",
+    "count": 2
+   }
+  },
+  {
+   "id": "quirk-count-0-kept",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;COUNT=0",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "count": 0
+   }
+  },
+  {
+   "id": "quirk-negative-interval",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;INTERVAL=-1",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily"
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "keeps-skip",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=MONTHLY;BYMONTHDAY=31;RSCALE=GREGORIAN;SKIP=BACKWARD",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "monthly",
+    "rscale": "gregorian",
+    "skip": "backward",
+    "byMonthDay": [
+     31
+    ]
+   }
+  },
+  {
+   "id": "keeps-zero-hour-and-minute",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=DAILY;BYHOUR=0;BYMINUTE=0",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "byHour": [
+     0
+    ],
+    "byMinute": [
+     0
+    ]
+   }
+  },
+  {
+   "id": "keeps-sub-daily",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE:FREQ=HOURLY;INTERVAL=4",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "hourly",
+    "interval": 4
+   }
+  },
+  {
+   "id": "lenient-frequency-case",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "WEEKLY",
+    "firstDayOfWeek": "SU",
+    "byDay": [
+     {
+      "day": "MO"
+     }
+    ]
+   },
+   "expected": "FREQ=WEEKLY;BYDAY=MO;WKST=SU"
+  },
+  {
+   "id": "lenient-bad-frequency",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "fortnightly"
+   },
+   "expected": null,
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "lenient-drops-bad-values",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "interval": 0,
+    "byHour": [
+     9,
+     24
+    ],
+    "byDay": [
+     {
+      "day": "mo",
+      "nthOfPeriod": 0
+     },
+     {
+      "day": "xx"
+     }
+    ]
+   },
+   "expected": "FREQ=DAILY;BYDAY=MO;BYHOUR=9",
+   "options": {
+    "warnings": 4
+   }
+  },
+  {
+   "id": "lenient-until-date",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31"
+   },
+   "options": {
+    "untilForm": "date"
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240131"
+  },
+  {
+   "id": "lenient-until-utc-zoned",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31T09:00:00Z"
+   },
+   "options": {
+    "untilForm": "zoned",
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+01:00"
+    }
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240131T090000Z"
+  },
+  {
+   "id": "lenient-until-utc-local",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31T23:30:00Z"
+   },
+   "options": {
+    "untilForm": "date",
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+01:00"
+    }
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240201"
+  },
+  {
+   "id": "lenient-until-offset-ms",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "until": "2024-01-31T10:00:00.000+01:00"
+   },
+   "options": {
+    "untilForm": "utc"
+   },
+   "expected": "FREQ=DAILY;UNTIL=20240131T090000Z"
+  },
+  {
+   "id": "lenient-lower-case-folded",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "exdate:20240108T090000,\r\n 20240101T090000"
+   ],
+   "expected": {
+    "2024-01-01T09:00:00": {
+     "excluded": true
+    },
+    "2024-01-08T09:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "lenient-skips-bad-value",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20240101T090000,garbage"
+   ],
+   "expected": {
+    "2024-01-01T09:00:00": {
+     "excluded": true
+    }
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "lenient-ignores-other-lines",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RRULE:FREQ=DAILY",
+    "EXDATE:20240101T090000"
+   ],
+   "expected": {
+    "2024-01-01T09:00:00": {
+     "excluded": true
+    }
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "lenient-period-without-value-type",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20240105T090000Z/PT2H"
+   ],
+   "expected": {
+    "2024-01-05T09:00:00": {
+     "duration": "PT2H"
+    }
+   },
+   "options": {
+    "eventTimeZone": "Etc/UTC"
+   }
+  },
+  {
+   "id": "lenient-exdate-period",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE;VALUE=PERIOD:20240105T090000Z/PT1H"
+   ],
+   "expected": {
+    "2024-01-05T09:00:00": {
+     "excluded": true
+    }
+   },
+   "options": {
+    "warnings": 1,
+    "eventTimeZone": "Etc/UTC"
+   }
+  },
+  {
+   "id": "lenient-date-with-time",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE;VALUE=DATE:20240101T090000"
+   ],
+   "expected": {
+    "2024-01-01T09:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "lenient-date-form-with-time",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-02T09:00:00": {
+     "excluded": true
+    }
+   },
+   "options": {
+    "form": "date",
+    "warnings": 1
+   },
+   "expected": {
+    "properties": [
+     "EXDATE;VALUE=DATE:20240102"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "lenient-recurrence-id-forms",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-02": {
+     "excluded": true
+    },
+    "2024-01-03T09:00:00.000": {
+     "excluded": true
+    },
+    "bad": {
+     "excluded": true
+    }
+   },
+   "expected": {
+    "properties": [
+     "EXDATE:20240102T000000,20240103T090000"
+    ],
+    "overrides": []
+   },
+   "options": {
+    "warnings": 1
+   }
+  },
+  {
+   "id": "recurrence-google-event",
+   "fn": "recurrenceFromICal",
+   "input": [
+    "RRULE:FREQ=WEEKLY;BYDAY=MO,WE;UNTIL=20240331T225959Z",
+    "EXDATE;TZID=Europe/Berlin:20240103T090000",
+    "RDATE;TZID=Europe/Berlin:20240106T090000",
+    "EXRULE:FREQ=MONTHLY;BYDAY=1MO"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+01:00"
+    }
+   },
+   "expected": {
+    "recurrenceRules": [
+     {
+      "@type": "RecurrenceRule",
+      "frequency": "weekly",
+      "byDay": [
+       {
+        "@type": "NDay",
+        "day": "mo"
+       },
+       {
+        "@type": "NDay",
+        "day": "we"
+       }
+      ],
+      "until": "2024-03-31T23:59:59"
+     }
+    ],
+    "excludedRecurrenceRules": [
+     {
+      "@type": "RecurrenceRule",
+      "frequency": "monthly",
+      "byDay": [
+       {
+        "@type": "NDay",
+        "day": "mo",
+        "nthOfPeriod": 1
+       }
+      ]
+     }
+    ],
+    "recurrenceOverrides": {
+     "2024-01-03T09:00:00": {
+      "excluded": true
+     },
+     "2024-01-06T09:00:00": {}
+    }
+   }
+  },
+  {
+   "id": "recurrence-lenient-skips",
+   "fn": "recurrenceFromICal",
+   "input": [
+    "RRULE:BYDAY=MO",
+    "DTSTART:20240101T090000",
+    "SUMMARY:x",
+    "RRULE:FREQ=DAILY"
+   ],
+   "expected": {
+    "recurrenceRules": [
+     {
+      "@type": "RecurrenceRule",
+      "frequency": "daily"
+     }
+    ],
+    "excludedRecurrenceRules": [],
+    "recurrenceOverrides": {}
+   },
+   "options": {
+    "warnings": 2
+   }
+  },
+  {
+   "id": "recurrence-strict-throws",
+   "fn": "recurrenceFromICal",
+   "input": [
+    "RRULE:FREQ=DAILY",
+    "SUMMARY:x"
+   ],
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "recurrence-to-ical",
+   "fn": "recurrenceToICal",
+   "input": {
+    "recurrenceRules": [
+     {
+      "@type": "RecurrenceRule",
+      "frequency": "weekly",
+      "interval": 1,
+      "byDay": [
+       {
+        "@type": "NDay",
+        "day": "mo"
+       },
+       {
+        "@type": "NDay",
+        "day": "we"
+       }
+      ],
+      "until": "2024-03-31T23:59:59"
+     }
+    ],
+    "excludedRecurrenceRules": [
+     {
+      "@type": "RecurrenceRule",
+      "frequency": "monthly",
+      "byDay": [
+       {
+        "@type": "NDay",
+        "day": "mo",
+        "nthOfPeriod": 1
+       }
+      ]
+     }
+    ],
+    "recurrenceOverrides": {
+     "2024-01-06T09:00:00": {},
+     "2024-01-03T09:00:00": {
+      "excluded": true
+     },
+     "2024-01-10T09:00:00": {
+      "title": "Moved"
+     }
+    }
+   },
+   "options": {
+    "form": "zoned",
+    "timeZone": "Europe/Berlin",
+    "eventTimeZone": "Europe/Berlin",
+    "offsets": {
+     "Europe/Berlin": "+01:00"
+    }
+   },
+   "expected": {
+    "properties": [
+     "RRULE:FREQ=WEEKLY;UNTIL=20240331T225959Z;BYDAY=MO,WE",
+     "EXRULE:FREQ=MONTHLY;BYDAY=1MO",
+     "EXDATE;TZID=Europe/Berlin:20240103T090000",
+     "RDATE;TZID=Europe/Berlin:20240106T090000"
+    ],
+    "overrides": [
+     "2024-01-10T09:00:00"
+    ]
+   }
+  },
+  {
+   "id": "recurrence-to-ical-all-day",
+   "fn": "recurrenceToICal",
+   "input": {
+    "recurrenceRules": [
+     {
+      "@type": "RecurrenceRule",
+      "frequency": "daily",
+      "until": "2024-01-31T00:00:00"
+     }
+    ],
+    "recurrenceOverrides": {
+     "2024-01-02T00:00:00": {
+      "excluded": true
+     }
+    }
+   },
+   "options": {
+    "form": "date"
+   },
+   "expected": {
+    "properties": [
+     "RRULE:FREQ=DAILY;UNTIL=20240131",
+     "EXDATE;VALUE=DATE:20240102"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "rrule-parameters-before-colon",
+   "fn": "recurrenceFromICal",
+   "input": [
+    "RRULE;X-EVOLUTION-ENDDATE=20240301T090000Z:FREQ=WEEKLY;COUNT=5"
+   ],
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "recurrenceRules": [
+     {
+      "@type": "RecurrenceRule",
+      "frequency": "weekly",
+      "count": 5
+     }
+    ],
+    "excludedRecurrenceRules": [],
+    "recurrenceOverrides": {}
+   }
+  },
+  {
+   "id": "rrule-quoted-parameter-before-colon",
+   "fn": "rruleToJsCalendar",
+   "input": "RRULE;X-NOTE=\"a:b;c\":FREQ=DAILY",
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily"
+   }
+  },
+  {
+   "id": "period-across-time-change",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250330T013000/20250330T033000,20250329T090000/20250330T100000"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T09:00:00": {
+     "duration": "PT24H"
+    },
+    "2025-03-30T01:30:00": {
+     "duration": "PT1H"
+    }
+   }
+  },
+  {
+   "id": "zoned-period-with-end-without-zones-warns",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250330T013000/20250330T033000"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "warnings": 1
+   },
+   "expected": {
+    "2025-03-30T01:30:00": {
+     "duration": "PT2H"
+    }
+   }
+  },
+  {
+   "id": "zoned-period-with-end-without-zones-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250330T013000/20250330T033000"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "period-with-a-day-in-the-event-zone-needs-no-zones",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250329T090000/P1D"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T09:00:00": {
+     "duration": "P1D"
+    }
+   }
+  },
+  {
+   "id": "period-with-a-day-in-another-zone",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250329T090000/P1D"
+   ],
+   "options": {
+    "eventTimeZone": "Etc/UTC",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T08:00:00": {
+     "duration": "PT23H"
+    }
+   }
+  },
+  {
+   "id": "period-with-a-day-in-another-zone-without-zones-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250329T090000/P1D"
+   ],
+   "options": {
+    "eventTimeZone": "Etc/UTC",
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "utc-value-without-event-time-zone-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20240105T090000Z"
+   ],
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "utc-value-without-event-time-zone-warns",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20240105T090000Z"
+   ],
+   "options": {
+    "warnings": 1
+   },
+   "expected": {
+    "2024-01-05T09:00:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "utc-value-in-zoned-event-without-zones-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20240105T090000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "same-instant-twice-is-one-rdate",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Etc/UTC:20250105T090000",
+    "RDATE:20250105T090000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Etc/UTC",
+    "strict": true
+   },
+   "expected": {
+    "2025-01-05T09:00:00": {}
+   }
+  },
+  {
+   "id": "same-instant-in-two-zones-is-one-rdate",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich:20250105T100000",
+    "RDATE:20250105T090000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-01-05T10:00:00": {}
+   }
+  },
+  {
+   "id": "exdate-in-another-zone-removes-rdate",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich:20250105T100000,20250106T100000",
+    "EXDATE:20250105T090000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-01-05T10:00:00": {
+     "excluded": true
+    },
+    "2025-01-06T10:00:00": {}
+   }
+  },
+  {
+   "id": "start-not-an-occurrence-count",
+   "fn": "recurrenceToICal",
+   "input": {
+    "recurrenceRules": [
+     {
+      "frequency": "weekly",
+      "byDay": [
+       {
+        "day": "fr"
+       }
+      ],
+      "count": 2
+     }
+    ]
+   },
+   "options": {
+    "start": "2024-01-01T09:00:00",
+    "keepJsCalendarMeaning": true,
+    "strict": true,
+    "warnings": 1
+   },
+   "expected": {
+    "properties": [
+     "RRULE:FREQ=WEEKLY;COUNT=2;BYDAY=FR"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "start-not-an-occurrence-count-one",
+   "fn": "recurrenceToICal",
+   "input": {
+    "recurrenceRules": [
+     {
+      "frequency": "weekly",
+      "byDay": [
+       {
+        "day": "fr"
+       }
+      ],
+      "count": 1
+     }
+    ]
+   },
+   "options": {
+    "start": "2024-01-01T09:00:00",
+    "keepJsCalendarMeaning": true,
+    "strict": true,
+    "warnings": 1
+   },
+   "expected": {
+    "properties": [
+     "RRULE:FREQ=WEEKLY;COUNT=1;BYDAY=FR"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "start-not-an-occurrence-excluded",
+   "fn": "recurrenceToICal",
+   "input": {
+    "recurrenceRules": [
+     {
+      "frequency": "weekly",
+      "byDay": [
+       {
+        "day": "fr"
+       }
+      ]
+     }
+    ],
+    "recurrenceOverrides": {
+     "2024-01-01T09:00:00": {
+      "excluded": true
+     }
+    }
+   },
+   "options": {
+    "start": "2024-01-01T09:00:00",
+    "keepJsCalendarMeaning": true,
+    "strict": true,
+    "warnings": 1
+   },
+   "expected": {
+    "properties": [
+     "RRULE:FREQ=WEEKLY;BYDAY=FR",
+     "EXDATE:20240101T090000"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "start-an-occurrence-unchanged",
+   "fn": "recurrenceToICal",
+   "input": {
+    "recurrenceRules": [
+     {
+      "frequency": "weekly",
+      "byDay": [
+       {
+        "day": "mo"
+       }
+      ],
+      "count": 2
+     }
+    ]
+   },
+   "options": {
+    "start": "2024-01-01T09:00:00",
+    "keepJsCalendarMeaning": true,
+    "strict": true
+   },
+   "expected": {
+    "properties": [
+     "RRULE:FREQ=WEEKLY;COUNT=2;BYDAY=MO"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "start-not-an-occurrence-single-rule-warns",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "byDay": [
+     {
+      "day": "fr"
+     }
+    ],
+    "count": 2
+   },
+   "options": {
+    "start": "2024-01-01T09:00:00",
+    "keepJsCalendarMeaning": true,
+    "warnings": 1
+   },
+   "expected": "FREQ=WEEKLY;COUNT=2;BYDAY=FR"
+  },
+  {
+   "id": "impossible-until-carried-in-its-year",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;UNTIL=20230230",
+   "options": {
+    "warnings": 1
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "until": "2023-03-02T00:00:00"
+   }
+  },
+  {
+   "id": "zero-duration-is-no-period",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-10T09:00:00": {
+     "duration": "PT0S"
+    }
+   },
+   "options": {
+    "occurrences": [],
+    "strict": true
+   },
+   "expected": {
+    "properties": [
+     "RDATE:20240110T090000"
+    ],
+    "overrides": [
+     "2024-01-10T09:00:00"
+    ]
+   }
+  },
+  {
+   "id": "duration-only-without-is-occurrence",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-08T09:00:00": {
+     "duration": "PT2H"
+    }
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "properties": [
+     "RDATE:20240108T090000"
+    ],
+    "overrides": [
+     "2024-01-08T09:00:00"
+    ]
+   }
+  },
+  {
+   "id": "duration-only-on-an-occurrence",
+   "fn": "recurrenceOverridesToICal",
+   "input": {
+    "2024-01-08T09:00:00": {
+     "duration": "PT2H"
+    }
+   },
+   "options": {
+    "occurrences": [
+     "2024-01-08T09:00:00"
+    ],
+    "strict": true
+   },
+   "expected": {
+    "properties": [],
+    "overrides": [
+     "2024-01-08T09:00:00"
+    ]
+   }
+  },
+  {
+   "id": "hebrew-leap-month-strict-import",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYMONTH=5L;BYMONTHDAY=8;RSCALE=HEBREW",
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "rscale": "hebrew",
+    "byMonthDay": [
+     8
+    ],
+    "byMonth": [
+     "5L"
+    ]
+   }
+  },
+  {
+   "id": "gregorian-leap-month-strict-error",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYMONTH=5L",
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "count-and-until-strict-error",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;COUNT=3;UNTIL=20240110",
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "count-and-until-keeps-count",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=DAILY;COUNT=3;UNTIL=20240110",
+   "options": {
+    "warnings": 1
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "daily",
+    "count": 3
+   }
+  },
+  {
+   "id": "count-and-until-back-strict-error",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "count": 3,
+    "until": "2024-01-10T00:00:00"
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "count-and-until-back-keeps-count",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "daily",
+    "count": 3,
+    "until": "2024-01-10T00:00:00"
+   },
+   "options": {
+    "warnings": 1
+   },
+   "expected": "FREQ=DAILY;COUNT=3"
+  },
+  {
+   "id": "utc-period-in-zoned-event-across-time-change",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20250329T110000Z/20250330T110000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T12:00:00": {
+     "duration": "PT24H"
+    }
+   }
+  },
+  {
+   "id": "utc-period-with-a-day-in-zoned-event-across-time-change",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20250329T110000Z/P1D"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T12:00:00": {
+     "duration": "PT24H"
+    }
+   }
+  },
+  {
+   "id": "period-with-a-day-in-the-event-zone-kept",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich;VALUE=PERIOD:20250329T120000/P1DT1H"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T12:00:00": {
+     "duration": "P1DT1H"
+    }
+   }
+  },
+  {
+   "id": "floating-period-with-a-day-kept",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;VALUE=PERIOD:20250329T120000/P1D"
+   ],
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "2025-03-29T12:00:00": {
+     "duration": "P1D"
+    }
+   }
+  },
+  {
+   "id": "exdate-of-second-repeated-hour-keeps-first",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z",
+    "EXDATE:20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {}
+   }
+  },
+  {
+   "id": "exdate-of-both-repeated-hours",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z",
+    "EXDATE:20251026T003000Z,20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "rdate-of-second-repeated-hour-left-out-warns",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "warnings": 1
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {}
+   }
+  },
+  {
+   "id": "rdate-of-second-repeated-hour-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "exdate-of-first-repeated-hour-leaves-second-out-warns",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z",
+    "EXDATE:20251026T003000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "warnings": 1
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "exdate-of-first-repeated-hour-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE:20251026T003000Z,20251026T013000Z",
+    "EXDATE:20251026T003000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "lone-exdate-of-second-repeated-hour-left-out-warns",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "warnings": 1
+   },
+   "expected": {}
+  },
+  {
+   "id": "lone-exdate-of-second-repeated-hour-strict-error",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "EXDATE:20251026T013000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "repeated-hour-in-the-event-zone-is-its-first",
+   "fn": "recurrenceOverridesFromICal",
+   "input": [
+    "RDATE;TZID=Europe/Zurich:20251026T023000",
+    "EXDATE:20251026T003000Z"
+   ],
+   "options": {
+    "eventTimeZone": "Europe/Zurich",
+    "offsets": {
+     "Europe/Zurich": [
+      "+01:00",
+      [
+       "2025-03-30T01:00:00Z",
+       "+02:00"
+      ],
+      [
+       "2025-10-26T01:00:00Z",
+       "+01:00"
+      ]
+     ]
+    },
+    "strict": true
+   },
+   "expected": {
+    "2025-10-26T02:30:00": {
+     "excluded": true
+    }
+   }
+  },
+  {
+   "id": "start-not-an-occurrence-count-zero",
+   "fn": "recurrenceToICal",
+   "input": {
+    "recurrenceRules": [
+     {
+      "frequency": "weekly",
+      "byDay": [
+       {
+        "day": "fr"
+       }
+      ],
+      "count": 0
+     }
+    ]
+   },
+   "options": {
+    "start": "2024-01-01T09:00:00",
+    "keepJsCalendarMeaning": true,
+    "warnings": 1
+   },
+   "expected": {
+    "properties": [
+     "RRULE:FREQ=WEEKLY;COUNT=0;BYDAY=FR"
+    ],
+    "overrides": []
+   }
+  },
+  {
+   "id": "start-check-stops-at-the-start",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "byMonth": [
+     "2"
+    ],
+    "byMonthDay": [
+     29
+    ],
+    "byDay": [
+     {
+      "day": "mo"
+     }
+    ],
+    "count": 1
+   },
+   "options": {
+    "start": "2024-02-29T09:00:00",
+    "keepJsCalendarMeaning": true,
+    "strict": true,
+    "warnings": 1
+   },
+   "expected": "FREQ=YEARLY;COUNT=1;BYMONTH=2;BYMONTHDAY=29;BYDAY=MO",
+   "note": "Feb 29, 2024 is a Thursday, so the start is not an occurrence; the check expands the rule only up to the start (the next Monday, Feb 29 is in 2072)."
+  },
+  {
+   "id": "hebrew-year-day-above-366",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;RSCALE=HEBREW;BYYEARDAY=370",
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "rscale": "hebrew",
+    "byYearDay": [
+     370
+    ]
+   }
+  },
+  {
+   "id": "hebrew-year-day-above-366-lenient",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;RSCALE=HEBREW;BYYEARDAY=370",
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "rscale": "hebrew",
+    "byYearDay": [
+     370
+    ]
+   }
+  },
+  {
+   "id": "hebrew-year-day-above-366-to-rrule",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "rscale": "hebrew",
+    "byYearDay": [
+     370
+    ]
+   },
+   "options": {
+    "strict": true
+   },
+   "expected": "FREQ=YEARLY;BYYEARDAY=370;RSCALE=HEBREW"
+  },
+  {
+   "id": "gregorian-year-day-above-366-strict-error",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;BYYEARDAY=370",
+   "options": {
+    "strict": true
+   },
+   "expected": {
+    "error": true
+   }
+  },
+  {
+   "id": "hebrew-implicit-month-day-not-computed",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "yearly",
+    "rscale": "hebrew"
+   },
+   "options": {
+    "start": "2024-10-03T00:00:00",
+    "keepJsCalendarMeaning": true,
+    "strict": true,
+    "warnings": 1
+   },
+   "expected": "FREQ=YEARLY;RSCALE=HEBREW",
+   "note": "2024-10-03 is 1 Tishri 5785; the Gregorian month and day would be wrong."
+  },
+  {
+   "id": "hebrew-weekly-implicit-day-is-added",
+   "fn": "jsCalendarToRRule",
+   "input": {
+    "frequency": "weekly",
+    "rscale": "hebrew"
+   },
+   "options": {
+    "start": "2024-10-03T00:00:00",
+    "keepJsCalendarMeaning": true,
+    "strict": true
+   },
+   "expected": "FREQ=WEEKLY;BYDAY=TH;RSCALE=HEBREW"
+  },
+  {
+   "id": "keep-rrule-meaning-hebrew-month-day-warns",
+   "fn": "rruleToJsCalendar",
+   "input": "FREQ=YEARLY;RSCALE=HEBREW;BYMONTHDAY=1",
+   "options": {
+    "keepRRuleMeaning": true,
+    "strict": true,
+    "warnings": 1
+   },
+   "expected": {
+    "@type": "RecurrenceRule",
+    "frequency": "yearly",
+    "rscale": "hebrew",
+    "byMonthDay": [
+     1
+    ]
+   }
+  }
+ ]
+}
