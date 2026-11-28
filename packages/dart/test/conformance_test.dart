@@ -132,8 +132,10 @@ void main() {
           }
         }
 
-        // INTERVAL=0 has no JSCalendar form (RFC 8984: interval >= 1).
-        if (RegExp(r'INTERVAL=0(;|$)').hasMatch(rrule)) {
+        // INTERVAL=0 has no JSCalendar form (RFC 8984: interval >= 1), and
+        // COUNT with UNTIL is not a valid RecurrenceRule.
+        if (RegExp(r'INTERVAL=0(;|$)').hasMatch(rrule) ||
+            rrule.contains('COUNT=') && rrule.contains('UNTIL=')) {
           expect(() => rruleToJsCalendar(rrule, strict: true), throwsFormatException,
               reason: rrule);
         } else {
@@ -142,7 +144,8 @@ void main() {
               () => RRuleOptions.parse(
                   jsCalendarToRRule(rruleToJsCalendar(rrule, strict: true)!, strict: true)!,
                   dtstart: dtstart));
-          // Yearly BYMONTHDAY with an nth BYDAY and no BYMONTH has no
+          // Yearly BYMONTHDAY with an nth BYDAY and no BYMONTH, with SKIP
+          // forward or backward and a month day above 28, has no
           // meaning-keeping form (see rruleMeaningInJsCalendar).
           final literal = _tryJs(rrule);
           final unkeepable = literal != null &&
@@ -152,7 +155,9 @@ void main() {
               literal['byWeekNo'] == null &&
               literal['byYearDay'] == null &&
               ((literal['byDay'] as List?) ?? const [])
-                  .any((d) => (d as Map)['nthOfPeriod'] != null);
+                  .any((d) => (d as Map)['nthOfPeriod'] != null) &&
+              (literal['skip'] == 'forward' || literal['skip'] == 'backward') &&
+              (literal['byMonthDay'] as List).any((d) => (d as int).abs() > 28);
           if (unkeepable) {
             withoutForm++;
           } else {

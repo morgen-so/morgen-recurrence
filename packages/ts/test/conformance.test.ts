@@ -85,7 +85,9 @@ const unkeepable = (js: JSCalendarRecurrenceRule | null) =>
   !js.byMonth &&
   !js.byWeekNo &&
   !js.byYearDay &&
-  (js.byDay ?? []).some((d) => d.nthOfPeriod != null)
+  (js.byDay ?? []).some((d) => d.nthOfPeriod != null) &&
+  (js.skip === 'forward' || js.skip === 'backward') &&
+  js.byMonthDay.some((d) => Math.abs(d) > 28)
 
 function fixtureFiles(): string[] {
   const spec = process.env.FIXTURES || path.join(__dirname, '../../../fixtures')
@@ -115,9 +117,10 @@ describe('conformance fixtures', () => {
         check('rrule', evaluate(c))
 
         // JSCalendar conversion, checked by the occurrences (as the Dart
-        // conformance test). INTERVAL=0 has no JSCalendar form.
+        // conformance test). INTERVAL=0 has no JSCalendar form, and COUNT
+        // with UNTIL is not a valid RecurrenceRule.
         const start = parse(c.dtstart)
-        if (/INTERVAL=0(;|$)/.test(c.rrule)) {
+        if (/INTERVAL=0(;|$)/.test(c.rrule) || (/COUNT=/.test(c.rrule) && /UNTIL=/.test(c.rrule))) {
           expect(() => rruleToJsCalendar(c.rrule, { strict: true })).toThrow()
         } else {
           check(

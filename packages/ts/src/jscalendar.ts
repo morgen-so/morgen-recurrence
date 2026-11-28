@@ -79,6 +79,13 @@ export type ToEventTime = (wallClock: Date, timeZone: string) => Date
 export type ToUtc = (wallClock: Date) => Date
 
 /**
+ * The UTC instant (its fields) of the wall clock `wallClock` in `timeZone`, a
+ * TZID parameter value. Used for the duration of an RDATE PERIOD with an
+ * explicit end, which is elapsed time (RFC 5545 section 3.3.9).
+ */
+export type ToInstant = (wallClock: Date, timeZone: string) => Date
+
+/**
  * The form of the iCalendar date-time values of a calendar object (draft
  * section 3.2, after RFC 5545 section 3.3.5):
  *  - `date`: DATE (`20240101`), for `showWithoutTime` without `timeZone`;
@@ -116,6 +123,8 @@ interface RuleValues {
   byday?: { day: number; n: number | null }[]
   bysetpos?: number[]
   bymonth?: number[]
+  /** BYMONTH as written (`5L`), with `anyRscale`. */
+  bymonthNames?: string[]
   bymonthday?: number[]
   byyearday?: number[]
   byweekno?: number[]
@@ -129,8 +138,13 @@ interface RuleValues {
 const ints = (v: string): number[] =>
   v.split(',').map((p) => (/^[+-]?\d+$/.test(p) ? Number(p) : fail(`Invalid number in RRULE: ${p}`)))
 
-/** The values of an RRULE value (`FREQ=…;…`), parts as written. */
-function ruleValues(body: string): RuleValues {
+/**
+ * The values of an RRULE value (`FREQ=…;…`), parts as written. With
+ * `anyRscale` (conversion), any RSCALE is read and, with a non-Gregorian one,
+ * BYMONTH may have leap months (RFC 7529 section 4.2); the parser itself
+ * expands only Gregorian rules.
+ */
+function ruleValues(body: string, anyRscale = false): RuleValues {
   const o: RuleValues = {}
   for (const attr of body.split(';')) {
     if (!attr) continue
@@ -177,7 +191,12 @@ function ruleValues(body: string): RuleValues {
         o.bysetpos = ints(value)
         break
       case 'BYMONTH':
-        o.bymonth = ints(value)
+        if (anyRscale) {
+          o.bymonthNames = value.split(',').map((m) => {
+            const n = /^\+?(\d+)(L?)$/i.exec(m)
+            return n && Number(n[1]) >= 1 ? `${Number(n[1])}${n[2].toUpperCase()}` : fail(`Invalid BYMONTH: ${value}`)
+          })
+        } else o.bymonth = ints(value)
         break
       case 'BYMONTHDAY':
         o.bymonthday = ints(value)
@@ -204,12 +223,21 @@ function ruleValues(body: string): RuleValues {
         break
       }
       case 'RSCALE':
-        if (value.toUpperCase() !== 'GREGORIAN') fail(`Unsupported RSCALE: ${value}`)
+        if (anyRscale ? !/^[A-Za-z0-9-]+$/.test(value) : value.toUpperCase() !== 'GREGORIAN') {
+          fail(`Unsupported RSCALE: ${value}`)
+        }
         o.rscale = value.toLowerCase()
         break
       default:
         fail(`Unknown RRULE property '${key}'`)
     }
+  }
+  if (o.bymonthNames) {
+    const gregorian = (o.rscale ?? 'gregorian') === 'gregorian'
+    // Gregorian months are checked by the parser's ranges below; other
+    // calendars have up to 13 months (RFC 7529).
+    if (gregorian) o.bymonth = o.bymonthNames.map((m) => (/L$/.test(m) ? fail(`Invalid BYMONTH: ${m}`) : Number(m)))
+    else if (o.bymonthNames.some((m) => parseInt(m, 10) > 13)) fail(`Invalid BYMONTH: ${o.bymonthNames}`)
   }
   return o
 }
@@ -219,6 +247,9 @@ function ruleValues(body: string): RuleValues {
 const DTSTART =
   /(?<=^|;)DTSTART((?:;[A-Z0-9-]+=(?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)*)(?::|=)([^;\s]*)/i
 const PARAM = ';([A-Z0-9-]+)=((?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)'
+// An RRULE or EXRULE property name, with its parameters (RFC 5545 rrulparam,
+// e.g. Evolution's `RRULE;X-EVOLUTION-ENDDATE=…:`), and the colon.
+const RULE_NAME = new RegExp(`^(?:RRULE|EXRULE)(?:${PARAM})*:`, 'i')
 
 /** The parameters in `s` (`;NAME=value…`), in order. */
 function params(s: string): RegExpExecArray[] {
@@ -247,7 +278,7 @@ function checkDtstart(m: RegExpExecArray) {
  * first two merged (upper-case keys, values as written, BYWEEKDAY as BYDAY,
  * TZID and DTSTART left out). As the Dart parseRRuleParts.
  */
-function ruleParts(s: string): Map<string, string> {
+function ruleParts(s: string, anyRscale = false): Map<string, string> {
   const merged = new Map<string, string>()
   const lines = s
     .replace(/\r?\n[ \t]/g, '')
@@ -257,7 +288,7 @@ function ruleParts(s: string): Map<string, string> {
   lines.forEach((line, index) => {
     const header = /^([A-Z]+?)[:;]/.exec(line.toUpperCase())?.[1] ?? null
     if (header === null || header === 'RRULE' || header === 'EXRULE') {
-      let body = line.replace(/^(?:RRULE|EXRULE):/i, '')
+      let body = line.replace(RULE_NAME, '')
       const inline = DTSTART.exec(body)
       if (inline) {
         checkDtstart(inline)
@@ -267,7 +298,7 @@ function ruleParts(s: string): Map<string, string> {
         .split(';')
         .filter((a) => a.length && !a.toUpperCase().startsWith('TZID='))
         .map((a) => (a.toUpperCase().startsWith('BYWEEKDAY=') ? `BYDAY${a.slice(9)}` : a))
-      ruleValues(attrs.join(';'))
+      ruleValues(attrs.join(';'), anyRscale)
       if (index >= 2) return
       for (const attr of attrs) {
         const eq = attr.indexOf('=')
@@ -314,10 +345,15 @@ function localDateTime(s: unknown): Date | null {
     : null
 }
 
-/** A floating date-time; month 1-12, years below 100 kept (Date.UTC maps them to 19xx). */
+/**
+ * A floating date-time; month 1-12, out-of-range fields carried over in year
+ * `y` itself (February 30, 2023 is March 2), years below 100 kept (Date.UTC
+ * maps them to 19xx).
+ */
 function utc(y: number, mo: number, d: number, h: number, mi: number, s: number): Date {
-  const date = new Date(Date.UTC(2000, mo - 1, d, h, mi, s))
-  date.setUTCFullYear(y + (date.getUTCFullYear() - 2000))
+  const date = new Date(0)
+  date.setUTCFullYear(y, mo - 1, d)
+  date.setUTCHours(h, mi, s, 0)
   return date
 }
 
@@ -422,8 +458,6 @@ export interface RRuleToJsCalendarOptions {
   toEventTime?: ToEventTime
   /** Adds properties so that JSCalendar gives the rrule.js occurrences. */
   keepRRuleMeaning?: boolean
-  /** Sets `interval` (1) when INTERVAL is not written, as Morgen's event schema requires. */
-  alwaysSetInterval?: boolean
   /** Throw on any problem instead of leaving it out. */
   strict?: boolean
   /** Receives what lenient conversion left out or changed. */
@@ -439,9 +473,8 @@ export interface RRuleToJsCalendarOptions {
  *
  * Each part maps to its property: values in lower case, BYDAY to NDay
  * objects, BYMONTH to strings. Only the parts in `rrule` are set, so
- * `interval` is left out unless INTERVAL is written, or `alwaysSetInterval` is
- * set (Morgen's event schema requires it). UNTIL becomes a LocalDateTime in
- * the event's time zone: a date is that day at midnight, a local time stays as
+ * `interval` is left out unless INTERVAL is written (RFC 8984's default is
+ * 1). UNTIL becomes a LocalDateTime in the event's time zone: a date is that day at midnight, a local time stays as
  * written, and a UTC time goes through `toEventTime` (called with `Etc/UTC`;
  * without it the UTC fields are kept, which is right for events in UTC or
  * without a time zone).
@@ -461,17 +494,23 @@ export interface RRuleToJsCalendarOptions {
  * may have fractional seconds or an offset; names and values may be in any
  * case. Returns null only without a readable FREQ. With `strict`, the rule
  * must be what `RRule.parseString` accepts, with FREQ, within RFC 5545's
- * ranges and INTERVAL >= 1, or an error is thrown. COUNT and UNTIL together
- * (which RFC 5545 forbids) are both kept either way.
+ * ranges and INTERVAL >= 1, or an error is thrown. COUNT and UNTIL together,
+ * which RFC 5545 and RFC 8984 forbid, throw with `strict`; otherwise COUNT
+ * is kept and UNTIL left out (reported).
  */
 export function rruleToJsCalendar(
   rrule: string,
   options: RRuleToJsCalendarOptions = {}
 ): JSCalendarRecurrenceRule | null {
-  const rule = options.strict ? strictRule(rrule) : lenientRule(rrule, issues(false, options.onWarning))
+  const issue = issues(!!options.strict, options.onWarning)
+  const rule = options.strict ? strictRule(rrule) : lenientRule(rrule, issue)
   if (!rule) return null
+  if (rule.count !== undefined && rule.until) {
+    issue(`COUNT and UNTIL together; UNTIL left out: ${rrule}`)
+    delete rule.until
+  }
   const js: JSCalendarRecurrenceRule = { '@type': 'RecurrenceRule', frequency: rule.freq }
-  if (rule.interval !== undefined || options.alwaysSetInterval) js.interval = rule.interval ?? 1
+  if (rule.interval !== undefined) js.interval = rule.interval
   if (rule.rscale !== undefined) js.rscale = rule.rscale
   if (rule.skip !== undefined) js.skip = rule.skip
   if (rule.wkst !== undefined) js.firstDayOfWeek = DAYS[rule.wkst]
@@ -500,9 +539,9 @@ export function rruleToJsCalendar(
 
 /** The strict reading: the parser's rules, FREQ required, RFC 5545's ranges, INTERVAL >= 1. */
 function strictRule(rrule: string): Rule {
-  const parts = ruleParts(rrule)
+  const parts = ruleParts(rrule, true)
   if (!parts.has('FREQ')) fail(`RRULE without FREQ: ${rrule}`)
-  const o = ruleValues([...parts].map(([k, v]) => `${k}=${v}`).join(';'))
+  const o = ruleValues([...parts].map(([k, v]) => `${k}=${v}`).join(';'), true)
   // RFC 5545 ranges, as rule expansion checks them.
   const opts: Partial<Options> = {
     freq: Frequency[o.freq.toUpperCase() as keyof typeof Frequency] as Frequency,
@@ -537,7 +576,7 @@ function strictRule(rrule: string): Rule {
     byMinute: o.byminute,
     bySecond: o.bysecond,
     bySetPos: o.bysetpos,
-    byMonth: o.bymonth?.map(String),
+    byMonth: o.bymonthNames,
     rscale: o.rscale,
     skip: o.skip,
   }
@@ -559,6 +598,7 @@ function lenientRule(rrule: string, issue: Issues): Rule | null {
       continue
     }
     const body = line
+      .replace(RULE_NAME, '')
       .replace(/^(?:RRULE|EXRULE)\s*:/i, '')
       .replace(/(?<=^|;)\s*DTSTART(?:;[^:=]*)?[:=][^;]*/gi, '')
     for (const raw of body.split(';')) {
@@ -687,11 +727,23 @@ function lenientRule(rrule: string, issue: Issues): Rule | null {
  * The properties are start-independent, so the result is the same for every
  * start. Other rules are returned unchanged (as a copy).
  *
- * One kind of rule has no JSCalendar form with the rrule.js occurrences and
- * stays as it is: yearly, with `byMonthDay`, no `byMonth`, `byWeekNo` or
- * `byYearDay`, and a `byDay` with `nthOfPeriod`. Adding `byMonth` would turn
- * "the 3rd Tuesday of the year" into "of each month".
+ *  - yearly, with `byMonthDay`, no `byMonth`, `byWeekNo` or `byYearDay`, and
+ *    a `byDay` with `nthOfPeriod`: `byYearDay` 1 to 366. It restricts
+ *    nothing, but stops JSCalendar from adding the start month, and keeps
+ *    "the 3rd Tuesday of the year" (adding `byMonth` would make it "of each
+ *    month").
+ *
+ * One kind of rule keeps no rrule.js meaning and stays as it is: the last
+ * case with a non-Gregorian `rscale`, or with `skip` forward or backward and
+ * a month day above 28, where an invalid day moves into another month.
  */
+/**
+ * Whether `skip` can move an invalid day (a month day above 28) to another
+ * month, where `byYearDay` and `byMonth` give other results than rrule.js.
+ */
+const movesInvalidDays = (r: JSCalendarRecurrenceRule) =>
+  (r.skip === 'forward' || r.skip === 'backward') && (r.byMonthDay ?? []).some((d) => Math.abs(d) > 28)
+
 export function rruleMeaningInJsCalendar(rule: JSCalendarRecurrenceRule): JSCalendarRecurrenceRule {
   const r: JSCalendarRecurrenceRule = { ...rule }
   const has = (k: keyof JSCalendarRecurrenceRule) => Array.isArray(r[k]) && (r[k] as unknown[]).length > 0
@@ -709,8 +761,11 @@ export function rruleMeaningInJsCalendar(rule: JSCalendarRecurrenceRule): JSCale
     case 'yearly':
       if (!has('byYearDay')) {
         const nth = has('byDay') && r.byDay.some((d) => d.nthOfPeriod != null)
-        if (!has('byMonth') && !has('byWeekNo') && has('byMonthDay') && !nth) {
-          r.byMonth = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']
+        if (!has('byMonth') && !has('byWeekNo') && has('byMonthDay')) {
+          if (!nth) r.byMonth = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']
+          else if ((r.rscale ?? 'gregorian') === 'gregorian' && !movesInvalidDays(r)) {
+            r.byYearDay = Array.from({ length: 366 }, (_, i) => i + 1)
+          }
         }
         if (has('byWeekNo') && !has('byMonthDay') && !has('byDay')) r.byDay = allDays()
       }
@@ -755,7 +810,11 @@ export interface JsCalendarToRRuleOptions {
  * With `keepJsCalendarMeaning`, the RRULE gets the properties RFC 8984 section
  * 4.3.3.1 (step 3) implicitly adds for `start` (required then), so that
  * rrule.js gives the JSCalendar occurrences: e.g. a yearly rule with only
- * `byMonthDay` gets BYMONTH with the start month.
+ * `byMonthDay` gets BYMONTH with the start month. RFC 8984 also counts the
+ * start as the first occurrence when the rule does not generate it (a weekly
+ * Friday rule from a Monday); rrule.js does not, and one RRULE cannot say it:
+ * that is reported to `onWarning`, and `recurrenceToICal` adds the start as
+ * an RDATE (with one less in COUNT).
  *
  * Lenient by default: invalid members and values are left out (reported to
  * `onWarning`); names may be in any case; `until` may also be a date
@@ -771,6 +830,34 @@ export function jsCalendarToRRule(
   rule: JSCalendarRecurrenceRule,
   options: JsCalendarToRRuleOptions = {}
 ): string | null {
+  const s = toRRule(rule, options)
+  if (s !== null && options.keepJsCalendarMeaning && options.start && !startMatches(rule, options.start)) {
+    options.onWarning?.(
+      `The start ${formatLocal(options.start)} is not an occurrence of the rule: RFC 8984 counts it, ` +
+        `rrule.js does not (recurrenceToICal adds it as an RDATE): ${s}`
+    )
+  }
+  return s
+}
+
+/**
+ * Whether rrule.js gives `start` as the first occurrence of `rule` (with the
+ * properties RFC 8984 adds for it), ignoring `count` and `until`. True when
+ * the rule cannot be expanded here (a non-Gregorian `rscale`).
+ */
+function startMatches(rule: JSCalendarRecurrenceRule, start: Date): boolean {
+  try {
+    const { count: _count, until: _until, ...open } = rule
+    const s = toRRule(open, { start, keepJsCalendarMeaning: true })
+    if (s === null) return true
+    const first = new RRule({ ...RRule.parseString(s), dtstart: start }).all((_, n) => n < 1)[0]
+    return first?.getTime() === start.getTime()
+  } catch {
+    return true
+  }
+}
+
+function toRRule(rule: JSCalendarRecurrenceRule, options: JsCalendarToRRuleOptions): string | null {
   const r = checkRule(rule, issues(!!options.strict, options.onWarning))
   if (!r) return null
   if (options.keepJsCalendarMeaning) {
@@ -899,7 +986,9 @@ function checkRule(rule: JSCalendarRecurrenceRule, issue: Issues): { rule: JSCal
   if (interval !== undefined) r.interval = interval
   const count = integer('count', 0)
   if (count !== undefined) r.count = count
-  if (src.until != null) {
+  const countAndUntil = count !== undefined && src.until != null
+  if (countAndUntil) bad('count with until (until left out)')
+  if (src.until != null && !countAndUntil) {
     const local = localDateTime(src.until)
     if (local) until = { value: local, utc: false, date: false }
     else if (issue.strict || typeof src.until !== 'string') bad('until')
@@ -971,6 +1060,8 @@ function checkRule(rule: JSCalendarRecurrenceRule, issue: Issues): { rule: JSCal
 export interface RecurrenceOverridesFromICalOptions {
   /** Converts a UTC value or one with a TZID to the event's wall clock. */
   toEventTime?: ToEventTime
+  /** The instant of a wall clock with a TZID, for a PERIOD that ends across a time change. */
+  toInstant?: ToInstant
   /** Throw on any problem instead of leaving it out. */
   strict?: boolean
   /** Receives what lenient conversion left out or changed. */
@@ -991,8 +1082,8 @@ export interface RecurrenceOverridesFromICalOptions {
  * one with a TZID goes through `toEventTime` (without it, the fields are
  * kept, which is right when they are already in the event's zone). An EXDATE
  * maps to `{"excluded": true}`, an RDATE to `{}`, or to `{"duration": …}` for
- * a PERIOD (an explicit end becomes the duration between the two wall
- * clocks). An EXDATE wins over an RDATE for the same key, as it excludes
+ * a PERIOD (an explicit end becomes a duration: whole days, then the
+ * elapsed time, exact across a time change with `toInstant`). An EXDATE wins over an RDATE for the same key, as it excludes
  * RDATEs too (RFC 5545 section 3.8.5.1).
  *
  * Lenient by default: other properties and values that cannot be read are
@@ -1002,7 +1093,7 @@ export interface RecurrenceOverridesFromICalOptions {
  */
 export function recurrenceOverridesFromICal(
   properties: string[],
-  { toEventTime, strict = false, onWarning }: RecurrenceOverridesFromICalOptions = {}
+  { toEventTime, toInstant, strict = false, onWarning }: RecurrenceOverridesFromICalOptions = {}
 ): Record<string, JSCalendarPatch> {
   const issue = issues(strict, onWarning)
   const rdates = new Map<string, JSCalendarPatch>()
@@ -1068,7 +1159,11 @@ export function recurrenceOverridesFromICal(
             const b = strict ? icalValue(end) : lenientTime(end, 'RDATE', issue)
             if (a && b) {
               if (b.value < a.value) issue(`PERIOD ends before it starts: ${item}`)
-              else duration = durationBetween(a.value, b.value)
+              else {
+                const zone = a.utc || a.date ? undefined : tzid
+                const instant = zone !== undefined && toInstant ? (d: Date) => toInstant(d, zone) : undefined
+                duration = durationBetween(a.value, b.value, instant)
+              }
             }
           }
           rdates.set(k, duration !== undefined ? { duration } : {})
@@ -1118,10 +1213,13 @@ export interface ICalRecurrenceDates {
  * `duration`); any other patch is left to `overrides`.
  *
  * Without `isOccurrence` (whether the rule generates a recurrence id), an
- * empty or duration-only patch counts as an RDATE and every other patch as an
- * override. Values are written in `form` (the event's DTSTART form; with
- * `zoned`, a TZID parameter of `timeZone`). With `date`, a duration cannot be
- * written: such an RDATE is also listed in the overrides.
+ * empty patch counts as an RDATE, a duration-only patch as an RDATE and an
+ * override (right whether the date is added or generated: an RDATE of a
+ * generated date changes nothing), and every other patch as an override.
+ * Values are written in `form` (the event's DTSTART form; with `zoned`, a
+ * TZID parameter of `timeZone`). A duration that a PERIOD cannot hold (with
+ * `date`, or a zero duration, which RFC 5545 does not allow) is left to the
+ * overrides, next to a plain RDATE.
  *
  * Lenient by default: a key that is not a LocalDateTime is read as well as it
  * can be (a date, fractional seconds, a `Z` that is dropped), a key with a
@@ -1130,7 +1228,16 @@ export interface ICalRecurrenceDates {
  */
 export function recurrenceOverridesToICal(
   overrides: Record<string, unknown>,
-  { form = 'local', timeZone, isOccurrence, strict = false, onWarning }: RecurrenceOverridesToICalOptions = {}
+  options: RecurrenceOverridesToICalOptions = {}
+): ICalRecurrenceDates {
+  return overridesToICal(overrides, options, [])
+}
+
+/** recurrenceOverridesToICal, with `added` (floating) as RDATEs too. */
+function overridesToICal(
+  overrides: Record<string, unknown>,
+  { form = 'local', timeZone, isOccurrence, strict = false, onWarning }: RecurrenceOverridesToICalOptions,
+  added: Date[]
 ): ICalRecurrenceDates {
   if (form === 'zoned' && !timeZone) throw new TypeError("form 'zoned' needs the time zone")
   const issue = issues(strict, onWarning)
@@ -1165,8 +1272,11 @@ export function recurrenceOverridesToICal(
     const durationOnly = keys.every((k) => k === 'duration')
     const generated = isOccurrence ? isOccurrence(id) : null
     if (generated === null ? durationOnly : !generated) {
-      const period = durationOnly && typeof p.duration === 'string' && form !== 'date' && DURATION.test(p.duration)
-      if (durationOnly && p.duration != null && !period && form !== 'date') {
+      // A PERIOD only for a date the rule does not generate (known from
+      // isOccurrence), with a positive duration (RFC 5545 section 3.3.9).
+      const period = generated === false && durationOnly && typeof p.duration === 'string' &&
+        form !== 'date' && DURATION.test(p.duration) && /[1-9]/.test(p.duration)
+      if (durationOnly && p.duration != null && !(typeof p.duration === 'string' && DURATION.test(p.duration))) {
         issue(`Invalid duration for ${key}: ${String(p.duration)}`)
       }
       if (period) periods.push(`${value}/${p.duration as string}`)
@@ -1177,6 +1287,11 @@ export function recurrenceOverridesToICal(
       rest.push(key)
     }
   }
+  for (const d of added) {
+    const value = formatICal(d, { date: form === 'date', utc: form === 'utc' })
+    if (!exdates.includes(value)) rdates.push(value)
+  }
+  rdates.sort()
   const valueParams = form === 'date' ? ';VALUE=DATE' : form === 'zoned' ? `;TZID=${paramValue(timeZone)}` : ''
   const zone = form === 'zoned' ? valueParams : ''
   return {
@@ -1204,8 +1319,8 @@ export interface JSCalendarRecurrence {
 
 export interface RecurrenceFromICalOptions {
   toEventTime?: ToEventTime
+  toInstant?: ToInstant
   keepRRuleMeaning?: boolean
-  alwaysSetInterval?: boolean
   strict?: boolean
   onWarning?: OnWarning
 }
@@ -1216,8 +1331,8 @@ export interface RecurrenceFromICalOptions {
  * `recurrenceRules`, `excludedRecurrenceRules` and `recurrenceOverrides`.
  *
  * Each RRULE and EXRULE goes through `rruleToJsCalendar` (with
- * `toEventTime`, `keepRRuleMeaning` and `alwaysSetInterval`); a rule without a
- * readable frequency is left out. EXDATE and RDATE go through
+ * `toEventTime` and `keepRRuleMeaning`); a rule without a readable
+ * frequency is left out. EXDATE and RDATE go through
  * `recurrenceOverridesFromICal`. DTSTART lines are ignored. Lenient by
  * default: other lines are left out (reported to `onWarning`); with `strict`,
  * they and any problem of the parts throw.
@@ -1267,6 +1382,11 @@ export interface RecurrenceToICalOptions {
  * `start` and `keepJsCalendarMeaning`), then EXDATE and RDATE from
  * `recurrenceOverridesToICal` (with `form`, `timeZone` and `isOccurrence`).
  * A rule without a valid frequency is left out (lenient) or throws (`strict`).
+ *
+ * With `keepJsCalendarMeaning`, a start that a rule does not generate is
+ * added as an RDATE and that rule's COUNT lowered by one (a rule with
+ * `count` 1 is then left out), since RFC 8984 counts the start as the
+ * first occurrence and rrule.js does not.
  */
 export function recurrenceToICal(
   recurrence: {
@@ -1276,17 +1396,29 @@ export function recurrenceToICal(
   },
   options: RecurrenceToICalOptions = {}
 ): ICalRecurrenceDates {
-  const rule = (r: JSCalendarRecurrenceRule) => jsCalendarToRRule(r, { ...options, untilForm: options.form })
-  const dates = recurrenceOverridesToICal(recurrence.recurrenceOverrides ?? {}, options)
+  const rule = (r: JSCalendarRecurrenceRule) => toRRule(r, { ...options, untilForm: options.form })
   const properties: string[] = []
+  const added: Date[] = []
   for (const r of recurrence.recurrenceRules ?? []) {
-    const s = rule(r)
+    let js = r
+    const start = options.start
+    if (options.keepJsCalendarMeaning && start && rule(r) !== null && !startMatches(r, start)) {
+      // RFC 8984 counts the start; rrule.js needs it as an RDATE.
+      if (!added.length) added.push(start)
+      const count = (r as unknown as Record<string, unknown>).count
+      if (typeof count === 'number' && count >= 1) {
+        if (count === 1) continue
+        js = { ...r, count: count - 1 }
+      }
+    }
+    const s = rule(js)
     if (s !== null) properties.push(`RRULE:${s}`)
   }
   for (const r of recurrence.excludedRecurrenceRules ?? []) {
     const s = rule(r)
     if (s !== null) properties.push(`EXRULE:${s}`)
   }
+  const dates = overridesToICal(recurrence.recurrenceOverrides ?? {}, options, added)
   return { properties: [...properties, ...dates.properties], overrides: dates.overrides }
 }
 
@@ -1322,11 +1454,22 @@ function property(line: string): { name: string; params: Record<string, string>;
 
 const DURATION = /^P(?:\d+W|(?=\d|T\d)(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?)$/
 
-/** The duration from `a` to `b` (wall clocks), e.g. `PT2H` or `P1DT30M`. */
-function durationBetween(a: Date, b: Date): string {
-  let s = Math.round((b.getTime() - a.getTime()) / 1000)
-  const days = Math.floor(s / 86400)
-  s %= 86400
+/**
+ * The JSCalendar Duration (RFC 8984 section 1.4.6) from the wall clock `a` to
+ * `b`, e.g. `PT2H` or `P1DT30M`: whole days are nominal (added in the wall
+ * clock), the rest is elapsed time, from `a` plus the days to `b`. With
+ * `instant` (the UTC instant of a wall clock), the elapsed time is exact
+ * across a time change; without it, it is the wall-clock difference.
+ */
+function durationBetween(a: Date, b: Date, instant: (d: Date) => Date = (d) => d): string {
+  const DAY = 86_400_000
+  let days = Math.floor((b.getTime() - a.getTime()) / DAY)
+  let s = Math.round((instant(b).getTime() - instant(new Date(a.getTime() + days * DAY)).getTime()) / 1000)
+  if (s < 0 && days > 0) {
+    days--
+    s = Math.round((instant(b).getTime() - instant(new Date(a.getTime() + days * DAY)).getTime()) / 1000)
+  }
+  s = Math.max(s, 0)
   const h = Math.floor(s / 3600)
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60

@@ -44,6 +44,7 @@ export type {
   RecurrenceOverridesToICalOptions,
   RRuleToJsCalendarOptions,
   ToEventTime,
+  ToInstant,
   ToUtc,
 } from './jscalendar'
 export { Frequency } from './types'

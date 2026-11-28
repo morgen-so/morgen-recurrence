@@ -17,7 +17,10 @@ It also converts recurrence to and from JSCalendar (RFC 8984):
 `rruleToJsCalendar`, `jsCalendarToRRule`, `recurrenceOverridesFromICal` and
 `recurrenceOverridesToICal` for its parts. They are lenient by default
 (problems go to `onWarning`; `strict: true` throws). See
-[JSCalendar conversion](../../README.md#jscalendar-conversion).
+[JSCalendar conversion](../../README.md#jscalendar-conversion). It follows the RFCs, not Morgen's
+schemas: what a project adapts (the frequency limit, a default `interval`,
+`null` for no recurrence, override components, provider writes) is in
+[What the caller adapts](../../README.md#what-the-caller-adapts).
 
 All of rrule.js's documentation applies, with the differences below. Bugs 1–5
 are described in the [repository README](../../README.md#what-changes-compared-with-rrulejs-280).

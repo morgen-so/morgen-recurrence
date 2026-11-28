@@ -428,7 +428,12 @@ class RRuleOptions {
 /// (inline DTSTART, else [dtstart], else a DTSTART line; null without any).
 /// Not exported: the JSCalendar conversion needs the parts as written, e.g.
 /// whether UNTIL ends in `Z`.
-({Map<String, String> parts, DateTime? start}) parseRRuleParts(String s, {DateTime? dtstart}) {
+///
+/// With [anyRscale] (conversion), any RSCALE is read and, with a non-Gregorian
+/// one, BYMONTH may have leap months up to 13 (RFC 7529 section 4.2); those
+/// two parts are then checked here, the rest as a Gregorian rule.
+({Map<String, String> parts, DateTime? start}) parseRRuleParts(String s,
+    {DateTime? dtstart, bool anyRscale = false}) {
   DateTime? inlineStart, lineStart;
   final merged = <String, String>{};
   // RFC 5545 section 3.1: a line break followed by a space or tab continues
@@ -441,7 +446,7 @@ class RRuleOptions {
     final header = RegExp(r'^([A-Z]+?)[:;]').firstMatch(line.toUpperCase())?.group(1);
     switch (header) {
       case null || 'RRULE' || 'EXRULE':
-        var body = line.replaceFirst(RegExp(r'^(?:RRULE|EXRULE):', caseSensitive: false), '');
+        var body = line.replaceFirst(ruleNamePattern, '');
         final inline = RRuleOptions._dtstartPattern.firstMatch(body);
         DateTime? start;
         if (inline != null) {
@@ -455,7 +460,8 @@ class RRuleOptions {
             if (attr.isNotEmpty && !attr.toUpperCase().startsWith('TZID='))
               attr.toUpperCase().startsWith('BYWEEKDAY=') ? 'BYDAY${attr.substring(9)}' : attr
         ];
-        RRuleOptions.parse(attrs.join(';'), dtstart: DateTime.utc(2000));
+        RRuleOptions.parse((anyRscale ? gregorianCheck(attrs) : attrs).join(';'),
+            dtstart: DateTime.utc(2000));
         if (index >= 2) continue;
         if (start != null) inlineStart = start;
         for (final attr in attrs) {
@@ -474,6 +480,46 @@ class RRuleOptions {
     }
   }
   return (parts: merged, start: inlineStart ?? dtstart ?? lineStart);
+}
+
+/// An RRULE or EXRULE property name, with its parameters (RFC 5545
+/// rrulparam, e.g. Evolution's `RRULE;X-EVOLUTION-ENDDATE=…:`), and the colon.
+/// Not exported.
+final ruleNamePattern = RegExp(
+    r'^(?:RRULE|EXRULE)(?:;[A-Z0-9-]+=(?:"[^"]*"|[^;:,"]*)(?:,(?:"[^"]*"|[^;:,"]*))*)*:',
+    caseSensitive: false);
+
+/// [attrs] (`NAME=value`) to check as a Gregorian rule: with a non-Gregorian
+/// RSCALE, its name and BYMONTH are checked here (RFC 7529: up to 13 months,
+/// leap months with `L`) and replaced by RSCALE=GREGORIAN without BYMONTH.
+/// Not exported.
+List<String> gregorianCheck(List<String> attrs) {
+  String? value(String name) {
+    for (final a in attrs) {
+      if (a.toUpperCase().startsWith('$name=')) return a.substring(name.length + 1);
+    }
+    return null;
+  }
+
+  final rscale = value('RSCALE');
+  if (rscale == null || rscale.toUpperCase() == 'GREGORIAN') return attrs;
+  if (!RegExp(r'^[A-Za-z0-9-]+$').hasMatch(rscale)) {
+    throw FormatException('Unsupported RSCALE: $rscale');
+  }
+  if (value('BYMONTH') case final String months) {
+    for (final m in months.split(',')) {
+      final n = RegExp(r'^\+?(\d+)(L?)$', caseSensitive: false).firstMatch(m);
+      final v = n == null ? 0 : int.parse(n.group(1)!);
+      if (v < 1 || v > 13) throw FormatException('Invalid BYMONTH: $months');
+    }
+  }
+  return [
+    for (final a in attrs)
+      if (a.toUpperCase().startsWith('RSCALE='))
+        'RSCALE=GREGORIAN'
+      else if (!a.toUpperCase().startsWith('BYMONTH='))
+        a
+  ];
 }
 
 /// Floating copy of [d] (wall-clock fields as UTC), truncated to milliseconds

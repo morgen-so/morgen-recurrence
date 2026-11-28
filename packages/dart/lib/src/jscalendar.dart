@@ -34,6 +34,11 @@ typedef ToEventTime = DateTime Function(DateTime wallClock, String timeZone);
 /// UTC (fields of the UTC instant).
 typedef ToUtc = DateTime Function(DateTime wallClock);
 
+/// The UTC instant (its fields) of the wall clock [wallClock] in [timeZone], a
+/// TZID parameter value. Used for the duration of an RDATE PERIOD with an
+/// explicit end, which is elapsed time (RFC 5545 section 3.3.9).
+typedef ToInstant = DateTime Function(DateTime wallClock, String timeZone);
+
 /// Receives what lenient conversion left out or changed.
 typedef OnWarning = void Function(String message);
 
@@ -118,20 +123,25 @@ class _Rule {
 /// case. Returns null only without a readable FREQ. With [strict], the rule
 /// must be what [RRuleOptions.parseString] accepts, with FREQ, within RFC 5545's
 /// ranges and INTERVAL >= 1, or a [FormatException] is thrown. COUNT and
-/// UNTIL together (which RFC 5545 forbids) are both kept either way.
+/// UNTIL together, which RFC 5545 and RFC 8984 forbid, throw with [strict];
+/// otherwise COUNT is kept and UNTIL left out (reported).
 Map<String, Object?>? rruleToJsCalendar(String rrule,
     {ToEventTime? toEventTime,
     bool keepRRuleMeaning = false,
-    bool alwaysSetInterval = false,
     bool strict = false,
     OnWarning? onWarning}) {
-  final rule = strict ? _strictRule(rrule) : _lenientRule(rrule, _Issues(false, onWarning));
+  final issue = _Issues(strict, onWarning);
+  final rule = strict ? _strictRule(rrule) : _lenientRule(rrule, issue);
   if (rule == null) return null;
+  if (rule.count != null && rule.until != null) {
+    issue('COUNT and UNTIL together; UNTIL left out: $rrule');
+    rule.until = null;
+  }
   final until = rule.until;
   final js = <String, Object?>{
     '@type': 'RecurrenceRule',
     'frequency': rule.freq,
-    if (rule.interval != null || alwaysSetInterval) 'interval': rule.interval ?? 1,
+    if (rule.interval != null) 'interval': rule.interval,
     if (rule.rscale != null) 'rscale': rule.rscale,
     if (rule.skip != null) 'skip': rule.skip,
     if (rule.wkst != null) 'firstDayOfWeek': _days[rule.wkst!],
@@ -159,10 +169,12 @@ Map<String, Object?>? rruleToJsCalendar(String rrule,
 /// The strict reading: [RRuleOptions.parseString]'s rules, FREQ required,
 /// RFC 5545's ranges, INTERVAL >= 1.
 _Rule _strictRule(String rrule) {
-  final (:parts, start: _) = parseRRuleParts(rrule, dtstart: DateTime.utc(2000));
+  final (:parts, start: _) = parseRRuleParts(rrule, dtstart: DateTime.utc(2000), anyRscale: true);
   if (!parts.containsKey('FREQ')) throw FormatException('RRULE without FREQ: $rrule');
-  final o = RRuleOptions.parse([for (final e in parts.entries) '${e.key}=${e.value}'].join(';'),
+  final o = RRuleOptions.parse(
+      gregorianCheck([for (final e in parts.entries) '${e.key}=${e.value}']).join(';'),
       dtstart: DateTime.utc(2000));
+  final gregorian = (parts['RSCALE'] ?? 'GREGORIAN').toUpperCase() == 'GREGORIAN';
   try {
     RRule(o);
   } on ArgumentError catch (e) {
@@ -178,7 +190,12 @@ _Rule _strictRule(String rrule) {
     ..wkst = o.wkst?.weekday
     ..byDay = o.byweekday == null ? null : [for (final w in o.byweekday!) (day: w.weekday, n: w.n)]
     ..byMonthDay = o.bymonthday
-    ..byMonth = o.bymonth == null ? null : [for (final m in o.bymonth!) '$m']
+    ..byMonth = gregorian
+        ? (o.bymonth == null ? null : [for (final m in o.bymonth!) '$m'])
+        : parts['BYMONTH']?.split(',').map((m) {
+            final n = RegExp(r'^\+?(\d+)(L?)$', caseSensitive: false).firstMatch(m)!;
+            return '${int.parse(n.group(1)!)}${n.group(2)!.toUpperCase()}';
+          }).toList()
     ..byYearDay = o.byyearday
     ..byWeekNo = o.byweekno
     ..byHour = o.byhour
@@ -199,7 +216,9 @@ _Rule? _lenientRule(String rrule, _Issues issue) {
       issue('Ignored $header in a recurrence rule: $line');
       continue;
     }
-    var body = line.replaceFirst(RegExp(r'^(?:RRULE|EXRULE)\s*:', caseSensitive: false), '');
+    var body = line
+        .replaceFirst(ruleNamePattern, '')
+        .replaceFirst(RegExp(r'^(?:RRULE|EXRULE)\s*:', caseSensitive: false), '');
     body = body.replaceAll(
         RegExp(r'(?<=^|;)\s*DTSTART(?:;[^:=]*)?[:=][^;]*', caseSensitive: false), '');
     for (final raw in body.split(';')) {
@@ -334,10 +353,15 @@ _Rule? _lenientRule(String rrule, _Issues issue) {
 /// The properties are start-independent, so the result is the same for every
 /// start. Other rules are returned unchanged (as a copy).
 ///
-/// One kind of rule has no JSCalendar form with the rrule.js occurrences and
-/// stays as it is: yearly, with `byMonthDay`, no `byMonth`, `byWeekNo` or
-/// `byYearDay`, and a `byDay` with `nthOfPeriod`. Adding `byMonth` would turn
-/// "the 3rd Tuesday of the year" into "of each month".
+///  * yearly, with `byMonthDay`, no `byMonth`, `byWeekNo` or `byYearDay`, and
+///    a `byDay` with `nthOfPeriod`: `byYearDay` 1 to 366. It restricts
+///    nothing, but stops JSCalendar from adding the start month, and keeps
+///    "the 3rd Tuesday of the year" (adding `byMonth` would make it "of each
+///    month").
+///
+/// One kind of rule keeps no rrule.js meaning and stays as it is: the last
+/// case with a non-Gregorian `rscale`, or with `skip` forward or backward and
+/// a month day above 28, where an invalid day moves into another month.
 Map<String, Object?> rruleMeaningInJsCalendar(Map<String, Object?> rule) {
   final r = Map<String, Object?>.of(rule);
   bool has(String k) => r[k] is List && (r[k] as List).isNotEmpty;
@@ -367,8 +391,15 @@ Map<String, Object?> rruleMeaningInJsCalendar(Map<String, Object?> rule) {
       if (!has('byYearDay')) {
         final nth =
             has('byDay') && (r['byDay'] as List).any((d) => d is Map && d['nthOfPeriod'] != null);
-        if (!has('byMonth') && !has('byWeekNo') && has('byMonthDay') && !nth) {
-          r['byMonth'] = [for (var m = 1; m <= 12; m++) '$m'];
+        if (!has('byMonth') && !has('byWeekNo') && has('byMonthDay')) {
+          final skip = r['skip'];
+          final movesInvalidDays = (skip == 'forward' || skip == 'backward') &&
+              (r['byMonthDay'] as List).any((d) => d is int && d.abs() > 28);
+          if (!nth) {
+            r['byMonth'] = [for (var m = 1; m <= 12; m++) '$m'];
+          } else if ((r['rscale'] ?? 'gregorian') == 'gregorian' && !movesInvalidDays) {
+            r['byYearDay'] = [for (var d = 1; d <= 366; d++) d];
+          }
         }
         if (has('byWeekNo') && !has('byMonthDay') && !has('byDay')) r['byDay'] = allDays;
       }
@@ -394,7 +425,11 @@ Map<String, Object?> rruleMeaningInJsCalendar(Map<String, Object?> rule) {
 /// With [keepJsCalendarMeaning], the RRULE gets the properties RFC 8984
 /// section 4.3.3.1 (step 3) implicitly adds for [start] (required then), so
 /// that rrule.js gives the JSCalendar occurrences: e.g. a yearly rule with
-/// only `byMonthDay` gets BYMONTH with the start month.
+/// only `byMonthDay` gets BYMONTH with the start month. RFC 8984 also counts
+/// the start as the first occurrence when the rule does not generate it (a
+/// weekly Friday rule from a Monday); rrule.js does not, and one RRULE cannot
+/// say it: that is reported to [onWarning], and [recurrenceToICal] adds the
+/// start as an RDATE (with one less in COUNT).
 ///
 /// Lenient by default: invalid members and values are left out (reported to
 /// [onWarning]); names may be in any case; `until` may also be a date
@@ -413,6 +448,42 @@ String? jsCalendarToRRule(Map<String, Object?> rule,
     bool keepJsCalendarMeaning = false,
     bool strict = false,
     OnWarning? onWarning}) {
+  final s = _toRRule(
+      rule, untilForm, toUtc, toEventTime, start, keepJsCalendarMeaning, strict, onWarning);
+  if (s != null && keepJsCalendarMeaning && start != null && !_startMatches(rule, start)) {
+    onWarning?.call('The start ${_formatLocal(start)} is not an occurrence of the rule: RFC 8984 '
+        'counts it, rrule.js does not (recurrenceToICal adds it as an RDATE): $s');
+  }
+  return s;
+}
+
+/// Whether rrule.js gives [start] as the first occurrence of [rule] (with the
+/// properties RFC 8984 adds for it), ignoring `count` and `until`. True when
+/// the rule cannot be expanded here (a non-Gregorian `rscale`).
+bool _startMatches(Map<String, Object?> rule, DateTime start) {
+  try {
+    final open = {
+      for (final e in rule.entries)
+        if (e.key != 'count' && e.key != 'until') e.key: e.value
+    };
+    final s = _toRRule(open, ICalDateForm.local, null, null, start, true, false, null);
+    if (s == null) return true;
+    final first = RRule(RRuleOptions.parse(s, dtstart: start)).all(limit: 1);
+    return first.isNotEmpty && first.first == start;
+  } catch (_) {
+    return true;
+  }
+}
+
+String? _toRRule(
+    Map<String, Object?> rule,
+    ICalDateForm untilForm,
+    ToUtc? toUtc,
+    ToEventTime? toEventTime,
+    DateTime? start,
+    bool keepJsCalendarMeaning,
+    bool strict,
+    OnWarning? onWarning) {
   final r = _checkRule(rule, _Issues(strict, onWarning));
   if (r == null) return null;
   if (keepJsCalendarMeaning) {
@@ -535,7 +606,9 @@ Map<String, Object?>? _checkRule(Map<String, Object?> rule, _Issues issue) {
 
   r['interval'] = integer('interval', min: 1);
   r['count'] = integer('count');
-  if (rule['until'] case final Object until) {
+  final countAndUntil = r['count'] != null && rule['until'] != null;
+  if (countAndUntil) bad('count with until (until left out)');
+  if (rule['until'] case final Object until when !countAndUntil) {
     final local = until is String ? _localDateTime(until) : null;
     if (local != null) {
       r['until'] = (value: local, utc: false, date: false);
@@ -719,8 +792,8 @@ List<String> _lines(String text) => [
 /// one with a TZID goes through [toEventTime] (without it, the fields are
 /// kept, which is right when they are already in the event's zone). An EXDATE
 /// maps to `{"excluded": true}`, an RDATE to `{}`, or to `{"duration": …}`
-/// for a PERIOD (an explicit end becomes the duration between the two wall
-/// clocks). An EXDATE wins over an RDATE for the same key, as it excludes
+/// for a PERIOD (an explicit end becomes a duration: whole days, then the
+/// elapsed time, exact across a time change with [toInstant]). An EXDATE wins over an RDATE for the same key, as it excludes
 /// RDATEs too (RFC 5545 section 3.8.5.1).
 ///
 /// Lenient by default: other properties and values that cannot be read are
@@ -728,7 +801,7 @@ List<String> _lines(String text) => [
 /// disagree with its VALUE type; an EXDATE PERIOD counts by its start. With
 /// [strict], these throw a [FormatException].
 Map<String, Map<String, Object?>> recurrenceOverridesFromICal(Iterable<String> properties,
-    {ToEventTime? toEventTime, bool strict = false, OnWarning? onWarning}) {
+    {ToEventTime? toEventTime, ToInstant? toInstant, bool strict = false, OnWarning? onWarning}) {
   final issue = _Issues(strict, onWarning);
   final rdates = <String, Map<String, Object?>>{}, exdates = <String>{};
   for (final text in properties) {
@@ -795,7 +868,9 @@ Map<String, Map<String, Object?>> recurrenceOverridesFromICal(Iterable<String> p
               if (b.value.isBefore(a.value)) {
                 issue('PERIOD ends before it starts: $item');
               } else {
-                duration = _durationBetween(a.value, b.value);
+                final zone = a.utc || a.date ? null : tzid;
+                duration = _durationBetween(a.value, b.value,
+                    zone != null && toInstant != null ? (d) => toInstant(d, zone) : null);
               }
             }
           }
@@ -835,11 +910,13 @@ class ICalRecurrenceDates {
 /// `duration`); any other patch is left to [ICalRecurrenceDates.overrides].
 ///
 /// Without [isOccurrence] (whether the rule generates a recurrence id), an
-/// empty or duration-only patch counts as an RDATE and every other patch as
-/// an override. Values are written in [form] (the event's DTSTART form; with
-/// [ICalDateForm.zoned], a TZID parameter of [timeZone]). With
-/// [ICalDateForm.date], a duration cannot be written: such an RDATE is also
-/// listed in the overrides.
+/// empty patch counts as an RDATE, a duration-only patch as an RDATE and an
+/// override (right whether the date is added or generated: an RDATE of a
+/// generated date changes nothing), and every other patch as an override.
+/// Values are written in [form] (the event's DTSTART form; with
+/// [ICalDateForm.zoned], a TZID parameter of [timeZone]). A duration that a
+/// PERIOD cannot hold (with [ICalDateForm.date], or a zero duration, which
+/// RFC 5545 does not allow) is left to the overrides, next to a plain RDATE.
 ///
 /// Lenient by default: a key that is not a LocalDateTime is read as well as
 /// it can be (a date, fractional seconds, a `Z` that is dropped), a key with a
@@ -847,11 +924,22 @@ class ICalRecurrenceDates {
 /// object is left out (all reported to [onWarning]). With [strict], these
 /// throw a [FormatException].
 ICalRecurrenceDates recurrenceOverridesToICal(Map<String, Object?> overrides,
-    {ICalDateForm form = ICalDateForm.local,
+        {ICalDateForm form = ICalDateForm.local,
+        String? timeZone,
+        bool Function(DateTime recurrenceId)? isOccurrence,
+        bool strict = false,
+        OnWarning? onWarning}) =>
+    _overridesToICal(overrides, form, timeZone, isOccurrence, strict, onWarning, const []);
+
+/// [recurrenceOverridesToICal], with [added] (floating) as RDATEs too.
+ICalRecurrenceDates _overridesToICal(
+    Map<String, Object?> overrides,
+    ICalDateForm form,
     String? timeZone,
     bool Function(DateTime recurrenceId)? isOccurrence,
-    bool strict = false,
-    OnWarning? onWarning}) {
+    bool strict,
+    OnWarning? onWarning,
+    List<DateTime> added) {
   if (form == ICalDateForm.zoned && (timeZone == null || timeZone.isEmpty)) {
     throw ArgumentError('ICalDateForm.zoned needs the time zone');
   }
@@ -883,11 +971,17 @@ ICalRecurrenceDates recurrenceOverridesToICal(Map<String, Object?> overrides,
     final generated = isOccurrence?.call(id);
     if (generated == null ? durationOnly : !generated) {
       final duration = patch['duration'];
-      final period = durationOnly &&
+      // A PERIOD only for a date the rule does not generate (known from
+      // isOccurrence), with a positive duration (RFC 5545 section 3.3.9).
+      final period = generated == false &&
+          durationOnly &&
           duration is String &&
           form != ICalDateForm.date &&
-          _duration.hasMatch(duration);
-      if (durationOnly && duration != null && !period && form != ICalDateForm.date) {
+          _duration.hasMatch(duration) &&
+          RegExp('[1-9]').hasMatch(duration);
+      if (durationOnly &&
+          duration != null &&
+          !(duration is String && _duration.hasMatch(duration))) {
         issue('Invalid duration for $key: $duration');
       }
       if (period) {
@@ -901,6 +995,11 @@ ICalRecurrenceDates recurrenceOverridesToICal(Map<String, Object?> overrides,
       rest.add(key);
     }
   }
+  for (final d in added) {
+    final value = _formatICal(d, date: form == ICalDateForm.date, utc: form == ICalDateForm.utc);
+    if (!exdates.contains(value)) rdates.add(value);
+  }
+  rdates.sort();
   final params = switch (form) {
     ICalDateForm.date => ';VALUE=DATE',
     ICalDateForm.zoned => ';TZID=${_paramValue(timeZone!)}',
@@ -937,15 +1036,15 @@ class JsCalendarRecurrence {
 /// `recurrenceRules`, `excludedRecurrenceRules` and `recurrenceOverrides`.
 ///
 /// Each RRULE and EXRULE goes through [rruleToJsCalendar] (with
-/// [toEventTime], [keepRRuleMeaning] and [alwaysSetInterval]); a rule without
-/// a readable frequency is left out. EXDATE and RDATE go through
+/// [toEventTime] and [keepRRuleMeaning]); a rule without a readable
+/// frequency is left out. EXDATE and RDATE go through
 /// [recurrenceOverridesFromICal]. DTSTART lines are ignored. Lenient by
 /// default: other lines are left out (reported to [onWarning]); with
 /// [strict], they and any problem of the parts throw a [FormatException].
 JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
     {ToEventTime? toEventTime,
+    ToInstant? toInstant,
     bool keepRRuleMeaning = false,
-    bool alwaysSetInterval = false,
     bool strict = false,
     OnWarning? onWarning}) {
   final issue = _Issues(strict, onWarning);
@@ -959,7 +1058,6 @@ JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
           final rule = rruleToJsCalendar(line,
               toEventTime: toEventTime,
               keepRRuleMeaning: keepRRuleMeaning,
-              alwaysSetInterval: alwaysSetInterval,
               strict: strict,
               onWarning: onWarning);
           if (rule != null) (name == 'RRULE' ? rules : excluded).add(rule);
@@ -976,7 +1074,7 @@ JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
       rules,
       excluded,
       recurrenceOverridesFromICal(dates,
-          toEventTime: toEventTime, strict: strict, onWarning: onWarning));
+          toEventTime: toEventTime, toInstant: toInstant, strict: strict, onWarning: onWarning));
 }
 
 /// JSCalendar `recurrenceRules`, `excludedRecurrenceRules` and
@@ -986,6 +1084,11 @@ JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
 /// [recurrenceOverridesToICal] (with [form], [timeZone] and [isOccurrence]).
 /// A rule without a valid frequency is left out (lenient) or throws
 /// ([strict]).
+///
+/// With [keepJsCalendarMeaning], a start that a rule does not generate is
+/// added as an RDATE and that rule's COUNT lowered by one (a rule with
+/// `count` 1 is then left out), since RFC 8984 counts the start as the first
+/// occurrence and rrule.js does not.
 ICalRecurrenceDates recurrenceToICal(
     {List<Map<String, Object?>>? recurrenceRules,
     List<Map<String, Object?>>? excludedRecurrenceRules,
@@ -999,23 +1102,26 @@ ICalRecurrenceDates recurrenceToICal(
     bool Function(DateTime recurrenceId)? isOccurrence,
     bool strict = false,
     OnWarning? onWarning}) {
-  String? rule(Map<String, Object?> r) => jsCalendarToRRule(r,
-      untilForm: form,
-      toUtc: toUtc,
-      toEventTime: toEventTime,
-      start: start,
-      keepJsCalendarMeaning: keepJsCalendarMeaning,
-      strict: strict,
-      onWarning: onWarning);
-  final dates = recurrenceOverridesToICal(recurrenceOverrides ?? const {},
-      form: form,
-      timeZone: timeZone,
-      isOccurrence: isOccurrence,
-      strict: strict,
-      onWarning: onWarning);
+  String? rule(Map<String, Object?> r) =>
+      _toRRule(r, form, toUtc, toEventTime, start, keepJsCalendarMeaning, strict, onWarning);
+  final rrules = <String>[];
+  final added = <DateTime>[];
+  for (final r in recurrenceRules ?? const <Map<String, Object?>>[]) {
+    var js = r;
+    if (keepJsCalendarMeaning && start != null && rule(r) != null && !_startMatches(r, start)) {
+      // RFC 8984 counts the start; rrule.js needs it as an RDATE.
+      if (added.isEmpty) added.add(start);
+      if (r['count'] case final int count when count >= 1) {
+        if (count == 1) continue;
+        js = {...r, 'count': count - 1};
+      }
+    }
+    if (rule(js) case final String s) rrules.add('RRULE:$s');
+  }
+  final dates = _overridesToICal(
+      recurrenceOverrides ?? const {}, form, timeZone, isOccurrence, strict, onWarning, added);
   return ICalRecurrenceDates([
-    for (final r in recurrenceRules ?? const <Map<String, Object?>>[])
-      if (rule(r) case final String s) 'RRULE:$s',
+    ...rrules,
     for (final r in excludedRecurrenceRules ?? const <Map<String, Object?>>[])
       if (rule(r) case final String s) 'EXRULE:$s',
     ...dates.properties,
@@ -1055,11 +1161,21 @@ String _paramValue(String v) => RegExp(r'[;:,]').hasMatch(v) ? '"$v"' : v;
 
 final _duration = RegExp(r'^P(?:\d+W|(?=\d|T\d)(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?)$');
 
-/// The duration from [a] to [b] (wall clocks), e.g. `PT2H` or `P1DT30M`.
-String _durationBetween(DateTime a, DateTime b) {
-  var s = b.difference(a).inSeconds;
-  final days = s ~/ 86400;
-  s %= 86400;
+/// The JSCalendar Duration (RFC 8984 section 1.4.6) from the wall clock [a]
+/// to [b], e.g. `PT2H` or `P1DT30M`: whole days are nominal (added in the
+/// wall clock), the rest is elapsed time, from [a] plus the days to [b]. With
+/// [instant] (the UTC instant of a wall clock), the elapsed time is exact
+/// across a time change; without it, it is the wall-clock difference.
+String _durationBetween(DateTime a, DateTime b, [DateTime Function(DateTime)? instant]) {
+  final at = instant ?? (DateTime d) => d;
+  var days = b.difference(a).inSeconds ~/ 86400;
+  int rest() => at(b).difference(at(a.add(Duration(days: days)))).inSeconds;
+  var s = rest();
+  if (s < 0 && days > 0) {
+    days--;
+    s = rest();
+  }
+  if (s < 0) s = 0;
   final h = s ~/ 3600, m = s % 3600 ~/ 60, sec = s % 60;
   final time = '${h > 0 ? '${h}H' : ''}${m > 0 ? '${m}M' : ''}${sec > 0 ? '${sec}S' : ''}';
   if (days == 0 && time.isEmpty) return 'PT0S';

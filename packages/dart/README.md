@@ -25,7 +25,10 @@ recurrenceFromICal(googleEvent.recurrence, toEventTime: ...); // a whole recurre
 The JSCalendar conversion follows draft-ietf-calext-jscalendar-icalendar. It is
 lenient by default: problems go to `onWarning`, or throw a `FormatException`
 with `strict: true`. See
-[JSCalendar conversion](../../README.md#jscalendar-conversion).
+[JSCalendar conversion](../../README.md#jscalendar-conversion). It follows the RFCs, not Morgen's
+schemas: what a project adapts (the frequency limit, a default `interval`,
+`null` for no recurrence, override components, provider writes) is in
+[What the caller adapts](../../README.md#what-the-caller-adapts).
 
 Times are **floating**: `DateTime`s with `isUtc: true` whose fields hold the
 wall clock. Non-UTC inputs are read by their fields. There is no time zone

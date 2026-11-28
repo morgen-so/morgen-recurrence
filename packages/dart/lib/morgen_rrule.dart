@@ -12,6 +12,7 @@ export 'src/jscalendar.dart'
         JsCalendarRecurrence,
         OnWarning,
         ToEventTime,
+        ToInstant,
         ToUtc,
         jsCalendarToRRule,
         recurrenceFromICal,
