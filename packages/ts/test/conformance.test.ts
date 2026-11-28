@@ -6,6 +6,8 @@ import * as path from 'path'
 import {
   jsCalendarToRRule,
   JSCalendarRecurrenceRule,
+  recurrenceFromICal,
+  recurrenceToICal,
   RRule,
   rruleToJsCalendar,
 } from '../src/index'
@@ -77,18 +79,6 @@ const tryJs = (rrule: string) => {
   }
 }
 
-/** Yearly BYMONTHDAY with an nth BYDAY and no BYMONTH: no meaning-keeping JSCalendar form. */
-const unkeepable = (js: JSCalendarRecurrenceRule | null) =>
-  !!js &&
-  js.frequency === 'yearly' &&
-  !!js.byMonthDay &&
-  !js.byMonth &&
-  !js.byWeekNo &&
-  !js.byYearDay &&
-  (js.byDay ?? []).some((d) => d.nthOfPeriod != null) &&
-  (js.skip === 'forward' || js.skip === 'backward') &&
-  js.byMonthDay.some((d) => Math.abs(d) > 28)
-
 function fixtureFiles(): string[] {
   const spec = process.env.FIXTURES || path.join(__dirname, '../../../fixtures')
   return spec.split(',').flatMap((p) =>
@@ -104,6 +94,7 @@ describe('conformance fixtures', () => {
   let total = 0
   let jscal = 0
   let withoutForm = 0
+  let warnedButKept = 0
   for (const file of fixtureFiles()) {
     it(path.basename(file), () => {
       const { cases } = JSON.parse(fs.readFileSync(file, 'utf8')) as { cases: Case[] }
@@ -127,19 +118,35 @@ describe('conformance fixtures', () => {
             'rrule->jscal->rrule',
             evaluate(c, () => jsCalendarToRRule(rruleToJsCalendar(c.rrule, { strict: true }), { strict: true }))
           )
-          // keepRRuleMeaning, evaluated as JSCalendar (keepJsCalendarMeaning).
-          if (unkeepable(tryJs(c.rrule))) withoutForm++
-          else {
-            check(
-              'rrule->jscal keepRRuleMeaning',
-              evaluate(c, () =>
-                jsCalendarToRRule(rruleToJsCalendar(c.rrule, { keepRRuleMeaning: true, strict: true }), {
-                  start,
-                  keepJsCalendarMeaning: true,
-                  strict: true,
-                })
-              )
-            )
+        }
+        if (tryJs(c.rrule)) {
+          // keepRRuleMeaning, evaluated as JSCalendar (keepJsCalendarMeaning):
+          // the same dates, or a warning that they may differ.
+          const warnings: string[] = []
+          const kept = rruleToJsCalendar(c.rrule, { keepRRuleMeaning: true, strict: true, onWarning: (m) => warnings.push(m) })
+          const keptDates = evaluate(c, () => jsCalendarToRRule(kept, { start, keepJsCalendarMeaning: true, strict: true }))
+          if (warnings.length) {
+            withoutForm++
+            if (JSON.stringify(keptDates) === JSON.stringify(c.expected)) warnedButKept++
+          } else check('rrule->jscal keepRRuleMeaning', keptDates)
+
+          // Round trips are stable: RRULE -> JSCalendar -> RRULE -> JSCalendar
+          // gives the same rule and RRULE, and so does a whole series
+          // (recurrenceToICal -> recurrenceFromICal -> recurrenceToICal, with
+          // the start), so a sync loop never changes an event.
+          const js1 = rruleToJsCalendar(c.rrule, { strict: true })
+          const s1 = jsCalendarToRRule(js1, { strict: true })
+          const js2 = rruleToJsCalendar(s1, { strict: true })
+          const s2 = jsCalendarToRRule(js2, { strict: true })
+          if (s1 !== s2 || normalJs(js1) !== normalJs(js2)) {
+            failures.push(`${c.id} (rrule round trip) ${c.rrule}\n  ${s1} ${normalJs(js1)}\n  ${s2} ${normalJs(js2)}`)
+          }
+          const series = (r: Parameters<typeof recurrenceToICal>[0]) =>
+            recurrenceToICal(r, { start, keepJsCalendarMeaning: true, isOccurrence: () => true }).properties
+          const p1 = series({ recurrenceRules: [kept] })
+          const p2 = series(recurrenceFromICal(p1, { strict: true }))
+          if (JSON.stringify(p1) !== JSON.stringify(p2)) {
+            failures.push(`${c.id} (series round trip) ${c.rrule}\n  ${JSON.stringify(p1)}\n  ${JSON.stringify(p2)}`)
           }
         }
         // Lenient (the default) gives the strict result wherever strict
@@ -172,7 +179,7 @@ describe('conformance fixtures', () => {
       }
       total += cases.length
       // eslint-disable-next-line no-console
-      console.log(`${path.basename(file)}: ${failures.length} failures in ${cases.length} cases (running total ${total}, ${jscal} jscal, ${withoutForm} without a meaning-keeping JSCalendar form)`)
+      console.log(`${path.basename(file)}: ${failures.length} failures in ${cases.length} cases (running total ${total}, ${jscal} jscal, ${withoutForm} keepRRuleMeaning warnings, ${warnedButKept} of them with the rrule.js dates anyway)`)
       expect(failures.slice(0, 10)).toEqual([])
     })
   }

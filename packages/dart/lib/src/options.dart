@@ -490,8 +490,9 @@ final ruleNamePattern = RegExp(
     caseSensitive: false);
 
 /// [attrs] (`NAME=value`) to check as a Gregorian rule: with a non-Gregorian
-/// RSCALE, its name and BYMONTH are checked here (RFC 7529: up to 13 months,
-/// leap months with `L`) and replaced by RSCALE=GREGORIAN without BYMONTH.
+/// RSCALE, its name, BYMONTH, BYYEARDAY and BYWEEKNO are checked here
+/// (RFC 7529: up to 13 months, leap months with `L`, and the year days and
+/// weeks of the longest years) and replaced by RSCALE=GREGORIAN without them.
 /// Not exported.
 List<String> gregorianCheck(List<String> attrs) {
   String? value(String name) {
@@ -513,14 +514,24 @@ List<String> gregorianCheck(List<String> attrs) {
       if (v < 1 || v > 13) throw FormatException('Invalid BYMONTH: $months');
     }
   }
+  for (final (name, max) in [('BYYEARDAY', maxYearDay.other), ('BYWEEKNO', maxWeekNo.other)]) {
+    for (final e in value(name)?.split(',') ?? const <String>[]) {
+      final n = int.tryParse(e.replaceFirst('+', ''));
+      if (n == null || n == 0 || n.abs() > max) throw FormatException('Invalid $name: $e');
+    }
+  }
+  bool dropped(String a) => ['BYMONTH=', 'BYYEARDAY=', 'BYWEEKNO='].any(a.toUpperCase().startsWith);
   return [
     for (final a in attrs)
-      if (a.toUpperCase().startsWith('RSCALE='))
-        'RSCALE=GREGORIAN'
-      else if (!a.toUpperCase().startsWith('BYMONTH='))
-        a
+      if (a.toUpperCase().startsWith('RSCALE=')) 'RSCALE=GREGORIAN' else if (!dropped(a)) a
   ];
 }
+
+/// The largest year day and week number: RFC 5545 for Gregorian rules, and
+/// for other calendars (RFC 7529) those of the longest years (a Hebrew or
+/// Chinese leap year has up to 385 days). Not exported.
+const maxYearDay = (gregorian: 366, other: 385);
+const maxWeekNo = (gregorian: 53, other: 55); // Not exported.
 
 /// Floating copy of [d] (wall-clock fields as UTC), truncated to milliseconds
 /// like JavaScript dates.

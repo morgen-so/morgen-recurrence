@@ -242,6 +242,14 @@ function ruleValues(body: string, anyRscale = false): RuleValues {
   return o
 }
 
+/**
+ * The largest year day and week number: RFC 5545 for Gregorian rules, and
+ * for other calendars (RFC 7529) those of the longest years (a Hebrew or
+ * Chinese leap year has up to 385 days).
+ */
+const MAX_YEAR_DAY = { gregorian: 366, other: 385 }
+const MAX_WEEK_NO = { gregorian: 53, other: 55 }
+
 // DTSTART at the start of the line or after a `;`, parameters in any order
 // (lists of quoted or plain values), then `:` or `=` and the value.
 const DTSTART =
@@ -534,7 +542,10 @@ export function rruleToJsCalendar(
     const u = rule.until
     js.until = formatLocal(u.utc && options.toEventTime ? options.toEventTime(u.value, 'Etc/UTC') : u.value)
   }
-  return options.keepRRuleMeaning ? rruleMeaningInJsCalendar(js) : js
+  if (!options.keepRRuleMeaning) return js
+  const kept = rruleMeaning(js)
+  if (kept.warning) options.onWarning?.(`${kept.warning}: ${rrule}`)
+  return kept.rule
 }
 
 /** The strict reading: the parser's rules, FREQ required, RFC 5545's ranges, INTERVAL >= 1. */
@@ -542,7 +553,16 @@ function strictRule(rrule: string): Rule {
   const parts = ruleParts(rrule, true)
   if (!parts.has('FREQ')) fail(`RRULE without FREQ: ${rrule}`)
   const o = ruleValues([...parts].map(([k, v]) => `${k}=${v}`).join(';'), true)
-  // RFC 5545 ranges, as rule expansion checks them.
+  // RFC 5545 ranges, as rule expansion checks them. Year days and week
+  // numbers of other calendars go further (RFC 7529): checked here.
+  const gregorian = (o.rscale ?? 'gregorian') === 'gregorian'
+  if (!gregorian) {
+    const check = (name: string, v: number[] | undefined, max: number) => {
+      if (v?.some((n) => n === 0 || Math.abs(n) > max)) fail(`Invalid ${name}: ${v}`)
+    }
+    check('BYYEARDAY', o.byyearday, MAX_YEAR_DAY.other)
+    check('BYWEEKNO', o.byweekno, MAX_WEEK_NO.other)
+  }
   const opts: Partial<Options> = {
     freq: Frequency[o.freq.toUpperCase() as keyof typeof Frequency] as Frequency,
     dtstart: new Date(Date.UTC(2000, 0, 1)),
@@ -553,8 +573,8 @@ function strictRule(rrule: string): Rule {
     bysetpos: o.bysetpos ?? null,
     bymonth: o.bymonth ?? null,
     bymonthday: o.bymonthday ?? null,
-    byyearday: o.byyearday ?? null,
-    byweekno: o.byweekno ?? null,
+    byyearday: gregorian ? o.byyearday ?? null : null,
+    byweekno: gregorian ? o.byweekno ?? null : null,
     byhour: o.byhour ?? null,
     byminute: o.byminute ?? null,
     bysecond: o.bysecond ?? null,
@@ -654,8 +674,9 @@ function lenientRule(rrule: string, issue: Issues): Rule | null {
   set('interval', integer('INTERVAL', 1))
   set('count', integer('COUNT', 0))
   set('byMonthDay', ints('BYMONTHDAY', 1, 31, true))
-  set('byYearDay', ints('BYYEARDAY', 1, 366, true))
-  set('byWeekNo', ints('BYWEEKNO', 1, 53, true))
+  const ranges = (rule.rscale ?? 'gregorian') === 'gregorian' ? 'gregorian' : 'other'
+  set('byYearDay', ints('BYYEARDAY', 1, MAX_YEAR_DAY[ranges], true))
+  set('byWeekNo', ints('BYWEEKNO', 1, MAX_WEEK_NO[ranges], true))
   set('byHour', ints('BYHOUR', 0, 23))
   set('byMinute', ints('BYMINUTE', 0, 59))
   set('bySecond', ints('BYSECOND', 0, 60))
@@ -722,30 +743,41 @@ function lenientRule(rrule: string, issue: Issues): Rule | null {
  *    (JSCalendar would add the start weekday or day of the month);
  *  - `nthOfPeriod` is dropped from `byDay` unless the frequency is monthly or
  *    yearly: rrule.js ignores it there (RFC 5545 forbids it), JSCalendar
- *    would count it within the month.
- *
- * The properties are start-independent, so the result is the same for every
- * start. Other rules are returned unchanged (as a copy).
- *
+ *    would count it within the month;
  *  - yearly, with `byMonthDay`, no `byMonth`, `byWeekNo` or `byYearDay`, and
  *    a `byDay` with `nthOfPeriod`: `byYearDay` 1 to 366. It restricts
  *    nothing, but stops JSCalendar from adding the start month, and keeps
  *    "the 3rd Tuesday of the year" (adding `byMonth` would make it "of each
  *    month").
  *
- * One kind of rule keeps no rrule.js meaning and stays as it is: the last
- * case with a non-Gregorian `rscale`, or with `skip` forward or backward and
- * a month day above 28, where an invalid day moves into another month.
+ * The properties are start-independent, so the result is the same for every
+ * start. Other rules are returned unchanged (as a copy).
+ *
+ * Two kinds of rule may keep no rrule.js meaning; `rruleToJsCalendar` reports
+ * them to `onWarning` (in strict mode too):
+ *
+ *  - a non-Gregorian `rscale` where a month list would be needed: the months
+ *    of the calendar are not known here, so the rule stays as it is;
+ *  - the `byYearDay` case with `skip` forward or backward and a month day
+ *    above 28: an invalid day that moves into another month may give other
+ *    dates than rrule.js.
  */
+export function rruleMeaningInJsCalendar(rule: JSCalendarRecurrenceRule): JSCalendarRecurrenceRule {
+  return rruleMeaning(rule).rule
+}
+
+const isGregorian = (r: { rscale?: string }) => (r.rscale ?? 'gregorian').toLowerCase() === 'gregorian'
+
 /**
  * Whether `skip` can move an invalid day (a month day above 28) to another
- * month, where `byYearDay` and `byMonth` give other results than rrule.js.
+ * month, where `byYearDay` may give other results than rrule.js.
  */
 const movesInvalidDays = (r: JSCalendarRecurrenceRule) =>
   (r.skip === 'forward' || r.skip === 'backward') && (r.byMonthDay ?? []).some((d) => Math.abs(d) > 28)
 
-export function rruleMeaningInJsCalendar(rule: JSCalendarRecurrenceRule): JSCalendarRecurrenceRule {
+function rruleMeaning(rule: JSCalendarRecurrenceRule): { rule: JSCalendarRecurrenceRule; warning?: string } {
   const r: JSCalendarRecurrenceRule = { ...rule }
+  let warning: string | undefined
   const has = (k: keyof JSCalendarRecurrenceRule) => Array.isArray(r[k]) && (r[k] as unknown[]).length > 0
   const allDays = (): JSCalendarNDay[] => DAYS.map((day) => ({ '@type': 'NDay', day }))
   if (r.frequency !== 'monthly' && r.frequency !== 'yearly' && has('byDay')) {
@@ -762,16 +794,21 @@ export function rruleMeaningInJsCalendar(rule: JSCalendarRecurrenceRule): JSCale
       if (!has('byYearDay')) {
         const nth = has('byDay') && r.byDay.some((d) => d.nthOfPeriod != null)
         if (!has('byMonth') && !has('byWeekNo') && has('byMonthDay')) {
-          if (!nth) r.byMonth = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']
-          else if ((r.rscale ?? 'gregorian') === 'gregorian' && !movesInvalidDays(r)) {
+          if (!isGregorian(r)) {
+            warning = `RFC 8984 adds the start month here; the months of RSCALE=${r.rscale.toUpperCase()} are not known, so the rule is kept as it is`
+          } else if (!nth) r.byMonth = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12']
+          else {
             r.byYearDay = Array.from({ length: 366 }, (_, i) => i + 1)
+            if (movesInvalidDays(r)) {
+              warning = 'SKIP can move a month day above 28 into another month; the JSCalendar dates may differ from rrule.js'
+            }
           }
         }
         if (has('byWeekNo') && !has('byMonthDay') && !has('byDay')) r.byDay = allDays()
       }
       break
   }
-  return r
+  return { rule: r, warning }
 }
 
 // ---------------------------------------------------------------------------
@@ -810,11 +847,15 @@ export interface JsCalendarToRRuleOptions {
  * With `keepJsCalendarMeaning`, the RRULE gets the properties RFC 8984 section
  * 4.3.3.1 (step 3) implicitly adds for `start` (required then), so that
  * rrule.js gives the JSCalendar occurrences: e.g. a yearly rule with only
- * `byMonthDay` gets BYMONTH with the start month. RFC 8984 also counts the
- * start as the first occurrence when the rule does not generate it (a weekly
- * Friday rule from a Monday); rrule.js does not, and one RRULE cannot say it:
- * that is reported to `onWarning`, and `recurrenceToICal` adds the start as
- * an RDATE (with one less in COUNT).
+ * `byMonthDay` gets BYMONTH with the start month. Two cases are reported to
+ * `onWarning` (in strict mode too) and written as they are:
+ *
+ *  - the start is not an occurrence of the rule (a weekly Friday rule from a
+ *    Monday). RFC 8984 and RFC 5545 both count the start as the first
+ *    occurrence, so COUNT is written as it is, but RFC 5545 calls such a set
+ *    undefined and rrule.js does not give the start;
+ *  - a non-Gregorian `rscale` where a month or month day would be added: the
+ *    start's date in that calendar is not computed here.
  *
  * Lenient by default: invalid members and values are left out (reported to
  * `onWarning`); names may be in any case; `until` may also be a date
@@ -833,24 +874,26 @@ export function jsCalendarToRRule(
   const s = toRRule(rule, options)
   if (s !== null && options.keepJsCalendarMeaning && options.start && !startMatches(rule, options.start)) {
     options.onWarning?.(
-      `The start ${formatLocal(options.start)} is not an occurrence of the rule: RFC 8984 counts it, ` +
-        `rrule.js does not (recurrenceToICal adds it as an RDATE): ${s}`
+      `The start ${formatLocal(options.start)} is not an occurrence of the rule: RFC 5545 calls the ` +
+        `recurrence set undefined, and rrule.js does not give the start: ${s}`
     )
   }
   return s
 }
 
 /**
- * Whether rrule.js gives `start` as the first occurrence of `rule` (with the
- * properties RFC 8984 adds for it), ignoring `count` and `until`. True when
- * the rule cannot be expanded here (a non-Gregorian `rscale`).
+ * Whether rrule.js gives `start` as an occurrence of `rule` (with the
+ * properties RFC 8984 adds for it), ignoring `count` and `until`: the rule
+ * is expanded up to `start` only. True when the rule cannot be expanded here
+ * (a non-Gregorian `rscale`).
  */
 function startMatches(rule: JSCalendarRecurrenceRule, start: Date): boolean {
   try {
+    if (!isGregorian(rule)) return true
     const { count: _count, until: _until, ...open } = rule
     const s = toRRule(open, { start, keepJsCalendarMeaning: true })
     if (s === null) return true
-    const first = new RRule({ ...RRule.parseString(s), dtstart: start }).all((_, n) => n < 1)[0]
+    const first = new RRule({ ...RRule.parseString(s), dtstart: start, until: start }).all()[0]
     return first?.getTime() === start.getTime()
   } catch {
     return true
@@ -862,7 +905,13 @@ function toRRule(rule: JSCalendarRecurrenceRule, options: JsCalendarToRRuleOptio
   if (!r) return null
   if (options.keepJsCalendarMeaning) {
     if (!options.start) throw new TypeError('keepJsCalendarMeaning needs the start')
-    addImplicitProperties(r.rule, options.start)
+    const skipped = addImplicitProperties(r.rule, options.start)
+    if (skipped) {
+      options.onWarning?.(
+        `RFC 8984 adds the start's ${skipped} here; the start's date in RSCALE=${r.rule.rscale.toUpperCase()} ` +
+          `is not computed, so it is left out: ${JSON.stringify(rule)}`
+      )
+    }
   }
   const js = r.rule
   const parts = [`FREQ=${js.frequency.toUpperCase()}`]
@@ -910,29 +959,38 @@ function untilToICal(until: Time, { untilForm = 'local', toUtc, toEventTime }: J
   }
 }
 
-/** RFC 8984 section 4.3.3.1 step 3, the date parts. As tools/lib/jscal.mjs. */
-function addImplicitProperties(r: JSCalendarRecurrenceRule, start: Date) {
+/**
+ * RFC 8984 section 4.3.3.1 step 3, the date parts. As tools/lib/jscal.mjs.
+ * With a non-Gregorian `rscale`, the month and month day (which need the
+ * start's date in that calendar) are not added: returns what was left out.
+ */
+function addImplicitProperties(r: JSCalendarRecurrenceRule, start: Date): string | undefined {
   const has = (k: keyof JSCalendarRecurrenceRule) => Array.isArray(r[k]) && (r[k] as unknown[]).length > 0
   const day = DAYS[(start.getUTCDay() + 6) % 7]
+  const gregorian = isGregorian(r)
   const hadByDay = has('byDay')
   const hadByMonthDay = has('byMonthDay')
+  const skipped: string[] = []
+  const monthDay = () => (gregorian ? (r.byMonthDay = [start.getUTCDate()]) : skipped.push('month day'))
   switch (r.frequency) {
     case 'weekly':
       if (!hadByDay) r.byDay = [{ '@type': 'NDay', day }]
       break
     case 'monthly':
-      if (!hadByDay && !hadByMonthDay) r.byMonthDay = [start.getUTCDate()]
+      if (!hadByDay && !hadByMonthDay) monthDay()
       break
     case 'yearly':
       if (!has('byYearDay')) {
         if (!has('byMonth') && !has('byWeekNo') && (hadByMonthDay || !hadByDay)) {
-          r.byMonth = [String(start.getUTCMonth() + 1)]
+          if (gregorian) r.byMonth = [String(start.getUTCMonth() + 1)]
+          else skipped.push('month')
         }
-        if (!hadByMonthDay && !has('byWeekNo') && !hadByDay) r.byMonthDay = [start.getUTCDate()]
+        if (!hadByMonthDay && !has('byWeekNo') && !hadByDay) monthDay()
         if (has('byWeekNo') && !hadByMonthDay && !hadByDay) r.byDay = [{ '@type': 'NDay', day }]
       }
       break
   }
+  return skipped.length ? skipped.join(' and ') : undefined
 }
 
 /**
@@ -1038,10 +1096,11 @@ function checkRule(rule: JSCalendarRecurrenceRule, issue: Issues): { rule: JSCal
       if (months.length) r.byMonth = months
     }
   }
+  const ranges = (r.rscale ?? 'gregorian') === 'gregorian' ? 'gregorian' : 'other'
   const lists: [keyof JSCalendarRecurrenceRule, number, { signed?: boolean; min?: number }][] = [
     ['byMonthDay', 31, { signed: true }],
-    ['byYearDay', 366, { signed: true }],
-    ['byWeekNo', 53, { signed: true }],
+    ['byYearDay', MAX_YEAR_DAY[ranges], { signed: true }],
+    ['byWeekNo', MAX_WEEK_NO[ranges], { signed: true }],
     ['byHour', 23, { min: 0 }],
     ['byMinute', 59, { min: 0 }],
     ['bySecond', 60, { min: 0 }],
@@ -1230,14 +1289,12 @@ export function recurrenceOverridesToICal(
   overrides: Record<string, unknown>,
   options: RecurrenceOverridesToICalOptions = {}
 ): ICalRecurrenceDates {
-  return overridesToICal(overrides, options, [])
+  return overridesToICal(overrides, options)
 }
 
-/** recurrenceOverridesToICal, with `added` (floating) as RDATEs too. */
 function overridesToICal(
   overrides: Record<string, unknown>,
-  { form = 'local', timeZone, isOccurrence, strict = false, onWarning }: RecurrenceOverridesToICalOptions,
-  added: Date[]
+  { form = 'local', timeZone, isOccurrence, strict = false, onWarning }: RecurrenceOverridesToICalOptions
 ): ICalRecurrenceDates {
   if (form === 'zoned' && !timeZone) throw new TypeError("form 'zoned' needs the time zone")
   const issue = issues(strict, onWarning)
@@ -1286,10 +1343,6 @@ function overridesToICal(
     } else if (keys.length) {
       rest.push(key)
     }
-  }
-  for (const d of added) {
-    const value = formatICal(d, { date: form === 'date', utc: form === 'utc' })
-    if (!exdates.includes(value)) rdates.push(value)
   }
   rdates.sort()
   const valueParams = form === 'date' ? ';VALUE=DATE' : form === 'zoned' ? `;TZID=${paramValue(timeZone)}` : ''
@@ -1383,10 +1436,8 @@ export interface RecurrenceToICalOptions {
  * `recurrenceOverridesToICal` (with `form`, `timeZone` and `isOccurrence`).
  * A rule without a valid frequency is left out (lenient) or throws (`strict`).
  *
- * With `keepJsCalendarMeaning`, a start that a rule does not generate is
- * added as an RDATE and that rule's COUNT lowered by one (a rule with
- * `count` 1 is then left out), since RFC 8984 counts the start as the
- * first occurrence and rrule.js does not.
+ * Each rule is written as `jsCalendarToRRule` writes it, warnings included:
+ * a start that a rule does not generate stays as it is (see there).
  */
 export function recurrenceToICal(
   recurrence: {
@@ -1396,29 +1447,17 @@ export function recurrenceToICal(
   },
   options: RecurrenceToICalOptions = {}
 ): ICalRecurrenceDates {
-  const rule = (r: JSCalendarRecurrenceRule) => toRRule(r, { ...options, untilForm: options.form })
+  const rule = (r: JSCalendarRecurrenceRule) => jsCalendarToRRule(r, { ...options, untilForm: options.form })
   const properties: string[] = []
-  const added: Date[] = []
   for (const r of recurrence.recurrenceRules ?? []) {
-    let js = r
-    const start = options.start
-    if (options.keepJsCalendarMeaning && start && rule(r) !== null && !startMatches(r, start)) {
-      // RFC 8984 counts the start; rrule.js needs it as an RDATE.
-      if (!added.length) added.push(start)
-      const count = (r as unknown as Record<string, unknown>).count
-      if (typeof count === 'number' && count >= 1) {
-        if (count === 1) continue
-        js = { ...r, count: count - 1 }
-      }
-    }
-    const s = rule(js)
+    const s = rule(r)
     if (s !== null) properties.push(`RRULE:${s}`)
   }
   for (const r of recurrence.excludedRecurrenceRules ?? []) {
     const s = rule(r)
     if (s !== null) properties.push(`EXRULE:${s}`)
   }
-  const dates = overridesToICal(recurrence.recurrenceOverrides ?? {}, options, added)
+  const dates = overridesToICal(recurrence.recurrenceOverrides ?? {}, options)
   return { properties: [...properties, ...dates.properties], overrides: dates.overrides }
 }
 
@@ -1455,25 +1494,18 @@ function property(line: string): { name: string; params: Record<string, string>;
 const DURATION = /^P(?:\d+W|(?=\d|T\d)(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?)$/
 
 /**
- * The JSCalendar Duration (RFC 8984 section 1.4.6) from the wall clock `a` to
- * `b`, e.g. `PT2H` or `P1DT30M`: whole days are nominal (added in the wall
- * clock), the rest is elapsed time, from `a` plus the days to `b`. With
- * `instant` (the UTC instant of a wall clock), the elapsed time is exact
+ * The JSCalendar Duration (RFC 8984 section 1.4.6) of the time elapsed from
+ * the wall clock `a` to `b`, in hours, minutes and seconds (`PT2H`, `PT24H`):
+ * RFC 8984 adds such a duration as exact time, so the end instant is kept
+ * whatever the event's time zone (nominal days would be added in the event's
+ * wall clock). With `instant` (the UTC instant of a wall clock) it is exact
  * across a time change; without it, it is the wall-clock difference.
  */
 function durationBetween(a: Date, b: Date, instant: (d: Date) => Date = (d) => d): string {
-  const DAY = 86_400_000
-  let days = Math.floor((b.getTime() - a.getTime()) / DAY)
-  let s = Math.round((instant(b).getTime() - instant(new Date(a.getTime() + days * DAY)).getTime()) / 1000)
-  if (s < 0 && days > 0) {
-    days--
-    s = Math.round((instant(b).getTime() - instant(new Date(a.getTime() + days * DAY)).getTime()) / 1000)
-  }
-  s = Math.max(s, 0)
+  const s = Math.max(Math.round((instant(b).getTime() - instant(a).getTime()) / 1000), 0)
   const h = Math.floor(s / 3600)
   const m = Math.floor((s % 3600) / 60)
   const sec = s % 60
   const time = `${h ? `${h}H` : ''}${m ? `${m}M` : ''}${sec ? `${sec}S` : ''}`
-  if (!days && !time) return 'PT0S'
-  return `P${days ? `${days}D` : ''}${time ? `T${time}` : ''}`
+  return time ? `PT${time}` : 'PT0S'
 }

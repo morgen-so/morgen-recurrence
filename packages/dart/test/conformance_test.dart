@@ -90,7 +90,7 @@ List<File> _fixtureFiles() {
 }
 
 void main() {
-  var total = 0, jscalTotal = 0, withoutForm = 0;
+  var total = 0, jscalTotal = 0, withoutForm = 0, warnedButKept = 0;
   for (final file in _fixtureFiles()) {
     final name = file.uri.pathSegments.last;
     test(name, () {
@@ -144,27 +144,49 @@ void main() {
               () => RRuleOptions.parse(
                   jsCalendarToRRule(rruleToJsCalendar(rrule, strict: true)!, strict: true)!,
                   dtstart: dtstart));
-          // Yearly BYMONTHDAY with an nth BYDAY and no BYMONTH, with SKIP
-          // forward or backward and a month day above 28, has no
-          // meaning-keeping form (see rruleMeaningInJsCalendar).
-          final literal = _tryJs(rrule);
-          final unkeepable = literal != null &&
-              literal['frequency'] == 'yearly' &&
-              literal['byMonthDay'] != null &&
-              literal['byMonth'] == null &&
-              literal['byWeekNo'] == null &&
-              literal['byYearDay'] == null &&
-              ((literal['byDay'] as List?) ?? const [])
-                  .any((d) => (d as Map)['nthOfPeriod'] != null) &&
-              (literal['skip'] == 'forward' || literal['skip'] == 'backward') &&
-              (literal['byMonthDay'] as List).any((d) => (d as int).abs() > 28);
-          if (unkeepable) {
+        }
+        if (_tryJs(rrule) != null) {
+          // keepRRuleMeaning, evaluated as JSCalendar: the same dates, or a
+          // warning that they may differ.
+          final warnings = <String>[];
+          final kept = rruleToJsCalendar(rrule,
+              keepRRuleMeaning: true, strict: true, onWarning: warnings.add)!;
+          if (warnings.isNotEmpty) {
             withoutForm++;
+            if (jsonEncode(_evaluate(() => RRuleOptions.fromJsCalendar(kept, dtstart)!, q)) ==
+                expected) {
+              warnedButKept++;
+            }
           } else {
             conversion(
-                'rrule->jscal keepRRuleMeaning',
-                () => RRuleOptions.fromJsCalendar(
-                    rruleToJsCalendar(rrule, keepRRuleMeaning: true, strict: true)!, dtstart)!);
+                'rrule->jscal keepRRuleMeaning', () => RRuleOptions.fromJsCalendar(kept, dtstart)!);
+          }
+          // Round trips are stable: RRULE -> JSCalendar -> RRULE -> JSCalendar
+          // gives the same rule and RRULE, and so does a whole series
+          // (recurrenceToICal -> recurrenceFromICal -> recurrenceToICal, with
+          // the start), so a sync loop never changes an event.
+          final js1 = rruleToJsCalendar(rrule, strict: true)!;
+          final s1 = jsCalendarToRRule(js1, strict: true)!;
+          final js2 = rruleToJsCalendar(s1, strict: true)!;
+          final s2 = jsCalendarToRRule(js2, strict: true)!;
+          if (s1 != s2 || _normalJs(js1) != _normalJs(js2)) {
+            failures.add('${c['id']} (rrule round trip) $rrule\n'
+                '  $s1 ${_normalJs(js1)}\n  $s2 ${_normalJs(js2)}');
+          }
+          List<String> series(List<Map<String, Object?>> rules,
+                  [Map<String, Object?>? overrides]) =>
+              recurrenceToICal(
+                  recurrenceRules: rules,
+                  recurrenceOverrides: overrides,
+                  start: dtstart,
+                  keepJsCalendarMeaning: true,
+                  isOccurrence: (_) => true).properties;
+          final p1 = series([kept]);
+          final back = recurrenceFromICal(p1, strict: true);
+          final p2 = series(back.recurrenceRules, back.recurrenceOverrides);
+          if (jsonEncode(p1) != jsonEncode(p2)) {
+            failures.add('${c['id']} (series round trip) $rrule\n'
+                '  ${jsonEncode(p1)}\n  ${jsonEncode(p2)}');
           }
         }
         // Lenient (the default) gives the strict result wherever strict
@@ -221,7 +243,8 @@ void main() {
           '$name: ${cases.length - failures.where((f) => !f.contains('(jscal') && !f.contains('(string)') && !f.contains('(rrule->')).length}'
           '/${cases.length} pass, jscal ${jscal - failures.where((f) => f.contains('(jscal)')).length}'
           '/$jscal (running total $total + $jscalTotal jscal, '
-          '$withoutForm without a meaning-keeping JSCalendar form)');
+          '$withoutForm keepRRuleMeaning warnings, $warnedButKept of them with the rrule.js '
+          'dates anyway)');
       expect(failures.take(10).toList(), isEmpty);
     });
   }

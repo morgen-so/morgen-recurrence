@@ -287,24 +287,35 @@ Every function also takes `strict` and `onWarning` (below).
   can change the occurrences of a few rules: `FREQ=YEARLY;BYMONTHDAY=15` is the
   15th of every month in rrule.js, but only of the start month as JSCalendar.
   - `keepRRuleMeaning` adds what keeps the rrule.js occurrences (here `byMonth`
-    1–12; for "Friday the 13th" style rules, `byYearDay` 1–366). Only yearly
-    rules with BYMONTHDAY above 28, an nth BYDAY and SKIP forward or backward
-    stay literal, because a skipped day moves into another month. That is 56
-    of the corpus's 9,425 rules.
+    1–12; for "Friday the 13th" style rules, `byYearDay` 1–366). Two kinds of
+    rule are reported to `onWarning` (in strict mode too): a non-Gregorian
+    RSCALE where a month list would be needed (the library does not know the
+    months of other calendars, so the rule stays literal), and yearly rules
+    with BYMONTHDAY above 28, an nth BYDAY and SKIP forward or backward, where
+    a skipped day can move into another month. That is 56 of the corpus's
+    9,425 rules; 51 of them still give the rrule.js dates.
   - `keepJsCalendarMeaning` adds what RFC 8984 adds for the start, so that
-    rrule.js gives the JSCalendar occurrences.
-  - **The start.** RFC 8984 counts the start as the first occurrence even when
-    the rule does not generate it. Example: an event starting on Monday
-    2024-01-01 with "weekly on Friday, `count` 2" has Jan 1 and Jan 5.
-    rrule.js gives Jan 5 and Jan 12 for `FREQ=WEEKLY;COUNT=2;BYDAY=FR`. With
-    `keepJsCalendarMeaning` and `start`, `recurrenceToICal` writes
-    `RRULE:FREQ=WEEKLY;COUNT=1;BYDAY=FR` and `RDATE:20240101T090000`.
-    `jsCalendarToRRule` cannot write that in one RRULE, so it warns.
+    rrule.js gives the JSCalendar occurrences. With a non-Gregorian RSCALE, the
+    start's month and day in that calendar are not computed: they are left out,
+    with a warning (a weekday is still added).
+  - **The start.** RFC 8984 and RFC 5545 both count the start as the first
+    occurrence, and RFC 5545 calls the recurrence set undefined when the start
+    does not match the rule. Example: an event starting on Monday 2024-01-01
+    with "weekly on Friday, `count` 2". rrule.js gives Jan 5 and Jan 12 for
+    `FREQ=WEEKLY;COUNT=2;BYDAY=FR`, and other clients may give Jan 1 and Jan 5.
+    The library writes the rule as it is and, with `keepJsCalendarMeaning` and
+    `start`, warns. It does not rewrite the rule (for example with an RDATE for
+    the start), because the rewrite does not survive reading it back.
 - **Overrides.** An EXDATE is `{"excluded": true}`, an RDATE is `{}`, and an
   RDATE PERIOD is `{"duration": …}`. An EXDATE wins over an RDATE.
-  - A PERIOD with an explicit end becomes whole days plus elapsed time. Pass
-    `toInstant` so the elapsed time is right across a time change: in
-    Europe/Zurich, `20250330T013000/20250330T033000` is `PT1H`, not `PT2H`.
+  - A PERIOD with an explicit end becomes the elapsed time, in hours, minutes
+    and seconds (`PT24H`, not `P1D`). RFC 8984 adds hours as exact time and
+    days in the event's wall clock, so only hours keep the end when the
+    period and the event are in different zones. Pass `toInstant` so the
+    elapsed time is right across a time change: in Europe/Zurich,
+    `20250330T013000/20250330T033000` is `PT1H`, not `PT2H`, and for a Zurich
+    event `20250329T110000Z/20250330T110000Z` is `PT24H` (12:00 Saturday to
+    13:00 Sunday).
   - Back, an excluded patch is an EXDATE and `{}` is an RDATE. A duration-only
     patch is an RDATE PERIOD only when `isOccurrence` says the rule does not
     generate that date. Without `isOccurrence`, it is a plain RDATE and an
@@ -326,6 +337,10 @@ Every function also takes `strict` and `onWarning` (below).
   - an EXDATE PERIOD counts by its start;
   - other lines in a recurrence are skipped.
 
+  - year days and week numbers of non-Gregorian rules go up to 385 and 55
+    (`RSCALE=HEBREW;BYYEARDAY=370` is valid); Gregorian rules keep RFC 5545's
+    366 and 53.
+
   Only a rule without a readable frequency is null (left out of a whole
   recurrence). With `strict: true`, each of these throws instead (TS `Error`,
   Dart `FormatException`). Lenient output equals strict output for every
@@ -340,8 +355,18 @@ Tests:
   repairs (with the expected number of warnings), and real-world quirks.
 - The conformance tests also check every corpus case by its occurrences: the
   RRULE → JSCalendar → RRULE round trip, `keepRRuleMeaning` evaluated as
-  JSCalendar, and `keepJsCalendarMeaning` against `jscalExpected`. They also
-  check that lenient equals strict.
+  JSCalendar (or a warning), and `keepJsCalendarMeaning` against
+  `jscalExpected`. They also check that lenient equals strict.
+- Round trips are stable for every corpus rule: RRULE → JSCalendar → RRULE →
+  JSCalendar gives the same rule, and a whole series through
+  `recurrenceToICal` → `recurrenceFromICal` → `recurrenceToICal` (with the
+  start and `keepJsCalendarMeaning`) gives the same lines, so a sync loop
+  never changes an event.
+- Generated tests (`roundtrip.test.ts`, `roundtrip_test.dart`; seed in
+  `ROUNDTRIP_SEED`): 2,000 RDATE periods across time changes, in UTC and two
+  zones, read into an event in another zone, keep their end instant; 500 sets
+  of overrides in each form come back from their lines and are written again
+  unchanged.
 - Both packages give the same output for every rule in the corpus.
 
 ### What the caller adapts
@@ -350,11 +375,12 @@ The library gives what the RFCs say. These cases need a few lines in the
 project that uses it, because they come from Morgen's schemas or from how a
 project writes to a provider.
 
-**Morgen's rule type.** Desktop, Kai and the backend type a rule as
-`frequency: 'yearly' | 'monthly' | 'weekly' | 'daily'`, `interval: number`
-(required), and `NDay.day: string`. The library's type allows HOURLY to
-SECONDLY and leaves `interval` out when INTERVAL is not written. One adapter
-per project covers all three:
+**Morgen's rule type.** Desktop and Kai type a rule with
+`frequency: 'yearly' | 'monthly' | 'weekly' | 'daily'`, a required
+`interval: number`, and `NDay.day: string`; the backend has the same with
+`interval` optional. The library's type allows HOURLY to SECONDLY, leaves
+`interval` out when INTERVAL is not written, and types `day` as
+`'mo' | … | 'su'`. So each direction needs a few lines:
 
 ```ts
 const MORGEN_FREQUENCIES = ['yearly', 'monthly', 'weekly', 'daily'] as const
@@ -364,18 +390,60 @@ function toMorgenRule(rule: JSCalendarRecurrenceRule | null): MorgenRecurrenceRu
   if (!rule || !(MORGEN_FREQUENCIES as readonly string[]).includes(rule.frequency)) return null
   return { ...rule, frequency: rule.frequency as MorgenRecurrenceRule['frequency'], interval: rule.interval ?? 1 }
 }
+
+const DAYS: readonly string[] = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su']
+const isDay = (d: string): d is JSCalendarDay => DAYS.includes(d)
+
+/** A stored Morgen rule as the library's rule: weekdays checked, unknown ones left out. */
+function fromMorgenRule(
+  rule: MorgenRecurrenceRule | Omit<MorgenRecurrenceRule, 'interval'>,
+  warn?: OnWarning
+): JSCalendarRecurrenceRule {
+  const byDay = rule.byDay?.flatMap((d): JSCalendarNDay[] => {
+    const day = d.day.toLowerCase()
+    if (isDay(day)) return [{ ...d, day }]
+    warn?.(`Unknown weekday ${d.day} left out`)
+    return []
+  })
+  return { ...rule, byDay }
+}
 ```
 
 - `FREQ=HOURLY;INTERVAL=2` gives `{frequency: "hourly", interval: 2}`, which
   `toMorgenRule` turns into null. Whether to drop the event's recurrence or
   reject the event is the project's choice.
 - `FREQ=WEEKLY;BYDAY=MO` gives no `interval`; `toMorgenRule` sets 1.
-- In the other direction, a Morgen rule passes to `jsCalendarToRRule` as it
-  is: the library reads `day` case-insensitively and leaves out invalid
-  values with a warning.
+- A stored rule goes to `jsCalendarToRRule(fromMorgenRule(rule, onWarning))`.
 - Mobile compares stored rules with presets by equality. If mobile adds
   `interval: 1` on read, it must add it to the presets too (or compare
   without it), or "Weekly" shows as "Custom".
+
+**The integration service's `rscale`.** Its rule types `rscale` as a CLDR
+calendar id and weekdays as the library does, so only `rscale` needs
+narrowing on import (the other direction compiles as it is):
+
+```ts
+// The integration service has this list as CLDR_CALENDAR_IDS (src/cldr/calendars.ts).
+const CLDR_CALENDARS: readonly string[] = [
+  'buddhist', 'chinese', 'coptic', 'dangi', 'ethiopic', 'ethiopic-amete-alem', 'generic', 'gregorian',
+  'hebrew', 'indian', 'islamic', 'islamic-civil', 'islamic-rgsa', 'islamic-tbla', 'islamic-umalqura',
+  'japanese', 'persian', 'roc',
+]
+const isCldrCalendar = (c: string): c is CldrCalendar => CLDR_CALENDARS.includes(c)
+
+/** A library rule for the integration service, or null for a calendar it does not know. */
+function toIntegrationRule(rule: JSCalendarRecurrenceRule | null): IntegrationRecurrenceRule | null {
+  if (!rule || !(MORGEN_FREQUENCIES as readonly string[]).includes(rule.frequency)) return null
+  const { rscale, ...rest } = { ...rule, frequency: rule.frequency as MorgenRecurrenceRule['frequency'] }
+  if (rscale === undefined) return rest
+  return isCldrCalendar(rscale) ? { ...rest, rscale } : null
+}
+```
+
+These adapters, and the time zone adapter below, are compiled in CI from
+[`packages/ts/examples/caller-adapters.ts`](packages/ts/examples/caller-adapters.ts),
+against copies of the shapes of the projects' rule types; a test checks that
+the README's code is the same as that file.
 
 **No recurrence.** The library returns empty lists and maps
 (`recurrenceFromICal([])` is `{recurrenceRules: [], excludedRecurrenceRules: [], recurrenceOverrides: {}}`),
@@ -418,8 +486,11 @@ on an added date becomes an RDATE PERIOD; without it, the duration goes to
 
 **Time zones.** The library never uses the machine's zone. The caller passes
 `toEventTime`, `toUtc` and `toInstant`, and normalizes zone names first
-(Windows names such as `Eastern Standard Time`, `UTC` vs `Etc/UTC`), for the
-source zone and the event zone alike. See the adapter below.
+(Windows names such as `Eastern Standard Time`), for the source zone and the
+event zone alike. UTC has many names (`UTC`, `Etc/UTC`, `GMT`, …), and the
+projects' zone libraries return different ones, so compare against all of
+them (`isUtc` below), or `form` gives `zoned` and `EXDATE;TZID=UTC:…` instead
+of `EXDATE:…Z`. See the adapter below.
 
 **Mobile's product rules.** These stay in mobile's Morgen Assist checks, run
 on the converted rule: no rules more frequent than daily, no BYHOUR, BYMINUTE
@@ -428,9 +499,19 @@ a date.
 
 **Rules with an unmatched start.** When an event's start is not an occurrence
 of its rule (common in imported events, never in rules Morgen's UI creates),
-use `recurrenceToICal` with `start` and `keepJsCalendarMeaning`, not
-`jsCalendarToRRule` per rule. Otherwise the start is lost in rrule.js-based
-clients.
+clients disagree on whether the start is shown: RFC 5545 calls the set
+undefined. With `start` and `keepJsCalendarMeaning`, the library warns and
+writes the rule as it is. If a project wants every client to show the start,
+it moves the start onto the rule, or adds the start as a separate RDATE in
+its own write path. It then also has to recognise that RDATE when it reads
+the event back, or the start counts twice against COUNT.
+
+**Non-Gregorian calendars.** RSCALE rules (RFC 7529) are converted
+literally, but the library computes no dates in other calendars. With
+`keepRRuleMeaning` or `keepJsCalendarMeaning`, a value that needs the
+calendar (a month list, or the start's month and day) is left out with a
+warning. A project that supports these calendars computes those values with
+its own calendar library.
 
 ### Replacing the `ical.ts` converters
 
@@ -444,6 +525,9 @@ go through `iana`:
 const fmt = (d: Date) => d.toISOString().slice(0, 19)
 const floating = (s: string) => new Date(`${s}Z`)
 const iana = (tz: string) => new TimezoneService.Timezone(tz === 'Etc/UTC' ? 'UTC' : tz).ianaName
+const UTC_ZONES = ['UTC', 'Etc/UTC', 'Etc/UCT', 'UCT', 'Etc/Universal', 'Universal', 'Etc/Zulu', 'Zulu',
+  'GMT', 'Etc/GMT', 'Etc/GMT0', 'GMT0', 'Etc/GMT+0', 'Etc/GMT-0', 'Etc/Greenwich', 'Greenwich']
+const isUtc = (tz: string) => UTC_ZONES.includes(iana(tz))
 const toEventTime = (eventTz: string) => (wall: Date, tz: string) =>
   floating(moment.tz(fmt(wall), iana(tz)).tz(iana(eventTz)).format('YYYY-MM-DDTHH:mm:ss'))
 const toUtc = (eventTz: string) => (wall: Date) =>
@@ -451,15 +535,15 @@ const toUtc = (eventTz: string) => (wall: Date) =>
 const toInstant = (wall: Date, tz: string) =>
   floating(moment.tz(fmt(wall), iana(tz)).utc().format('YYYY-MM-DDTHH:mm:ss'))
 const form = (allDay: boolean, tz?: string | null): ICalDateForm =>
-  allDay ? 'date' : !tz ? 'local' : iana(tz) === 'UTC' ? 'utc' : 'zoned'
+  allDay ? 'date' : !tz ? 'local' : isUtc(tz) ? 'utc' : 'zoned'
 ```
 
 | old | new |
 |---|---|
 | `iCalendarRecurrencesToJSCalendar(lines, tz)` | `recurrenceFromICal(lines, { toEventTime: tz && toEventTime(tz), toInstant, onWarning })`, then `toMorgenRule` on each rule |
-| `jsCalendarToICalendarRecurrences(rules, overrides, allDay, tz)` | `recurrenceToICal({ recurrenceRules: rules, recurrenceOverrides: overrides }, { form: form(allDay, tz), timeZone: tz, toUtc: tz && toUtc(tz), isOccurrence })`; `.properties` are the lines, `.overrides` the instances to write separately |
+| `jsCalendarToICalendarRecurrences(rules, overrides, allDay, tz)` | `recurrenceToICal({ recurrenceRules: rules.map((r) => fromMorgenRule(r, onWarning)), recurrenceOverrides: overrides }, { form: form(allDay, tz), timeZone: tz, toUtc: tz && toUtc(tz), isOccurrence })`; `.properties` are the lines, `.overrides` the instances to write separately |
 | `iCalRecurrenceRuleToJSCalendarRecurrenceRule(rrule, tz)` | `toMorgenRule(rruleToJsCalendar(rrule, { toEventTime: tz && toEventTime(tz), onWarning }))` |
-| `jsCalendarRecurrenceRuleToICalRecurrenceRule(rule, allDay, tz)` | `'RRULE:' + jsCalendarToRRule(rule, { untilForm: form(allDay, tz), toUtc: tz && toUtc(tz), toEventTime: tz && toEventTime(tz) })` |
+| `jsCalendarRecurrenceRuleToICalRecurrenceRule(rule, allDay, tz)` | `'RRULE:' + jsCalendarToRRule(fromMorgenRule(rule, onWarning), { untilForm: form(allDay, tz), toUtc: tz && toUtc(tz), toEventTime: tz && toEventTime(tz) })` |
 
 Differences from the `ical.ts` converters. A comparison on the corpus and on
 real-world quirks found these bugs there, fixed here:
@@ -484,6 +568,8 @@ Also different, by design:
 - `Etc/UTC` is written with `Z`, like `UTC`.
 - COUNT and UNTIL together keep COUNT only.
 - Sub-daily rules are returned (`toMorgenRule` drops them).
+- An RDATE PERIOD's duration is in hours (`PT24H`), which keeps the end in
+  any event zone.
 
 ## Performance
 

@@ -163,7 +163,10 @@ Map<String, Object?>? rruleToJsCalendar(String rrule,
       'until': _formatLocal(
           until.utc && toEventTime != null ? toEventTime(until.value, 'Etc/UTC') : until.value),
   };
-  return keepRRuleMeaning ? rruleMeaningInJsCalendar(js) : js;
+  if (!keepRRuleMeaning) return js;
+  final (rule: kept, :warning) = _rruleMeaning(js);
+  if (warning != null) onWarning?.call('$warning: $rrule');
+  return kept;
 }
 
 /// The strict reading: [RRuleOptions.parseString]'s rules, FREQ required,
@@ -175,6 +178,9 @@ _Rule _strictRule(String rrule) {
       gregorianCheck([for (final e in parts.entries) '${e.key}=${e.value}']).join(';'),
       dtstart: DateTime.utc(2000));
   final gregorian = (parts['RSCALE'] ?? 'GREGORIAN').toUpperCase() == 'GREGORIAN';
+  // Year days and week numbers of other calendars (checked by gregorianCheck).
+  List<int>? ints(String? v) =>
+      v?.split(',').map((e) => int.parse(e.replaceFirst('+', ''))).toList();
   try {
     RRule(o);
   } on ArgumentError catch (e) {
@@ -196,8 +202,8 @@ _Rule _strictRule(String rrule) {
             final n = RegExp(r'^\+?(\d+)(L?)$', caseSensitive: false).firstMatch(m)!;
             return '${int.parse(n.group(1)!)}${n.group(2)!.toUpperCase()}';
           }).toList()
-    ..byYearDay = o.byyearday
-    ..byWeekNo = o.byweekno
+    ..byYearDay = gregorian ? o.byyearday : ints(parts['BYYEARDAY'])
+    ..byWeekNo = gregorian ? o.byweekno : ints(parts['BYWEEKNO'])
     ..byHour = o.byhour
     ..byMinute = o.byminute
     ..bySecond = o.bysecond
@@ -274,18 +280,20 @@ _Rule? _lenientRule(String rrule, _Issues issue) {
     return out.isEmpty ? null : out;
   }
 
+  final gregorian = _isGregorian({'rscale': rule.rscale});
   rule
     ..interval = integer('INTERVAL', 1)
     ..count = integer('COUNT', 0)
     ..byMonthDay = ints('BYMONTHDAY', 1, 31, signed: true)
-    ..byYearDay = ints('BYYEARDAY', 1, 366, signed: true)
-    ..byWeekNo = ints('BYWEEKNO', 1, 53, signed: true)
+    ..byYearDay =
+        ints('BYYEARDAY', 1, gregorian ? maxYearDay.gregorian : maxYearDay.other, signed: true)
+    ..byWeekNo =
+        ints('BYWEEKNO', 1, gregorian ? maxWeekNo.gregorian : maxWeekNo.other, signed: true)
     ..byHour = ints('BYHOUR', 0, 23)
     ..byMinute = ints('BYMINUTE', 0, 59)
     ..bySecond = ints('BYSECOND', 0, 60)
     ..bySetPos = ints('BYSETPOS', 1, 366, signed: true);
   if (parts['BYMONTH'] case final String v) {
-    final gregorian = (rule.rscale ?? 'gregorian') == 'gregorian';
     final months = <String>[];
     for (final raw in v.split(',')) {
       final e = raw.trim().toUpperCase();
@@ -348,22 +356,33 @@ _Rule? _lenientRule(String rrule, _Issues issue) {
 ///    (JSCalendar would add the start weekday or day of the month);
 ///  * `nthOfPeriod` is dropped from `byDay` unless the frequency is monthly or
 ///    yearly: rrule.js ignores it there (RFC 5545 forbids it), JSCalendar
-///    would count it within the month.
-///
-/// The properties are start-independent, so the result is the same for every
-/// start. Other rules are returned unchanged (as a copy).
-///
+///    would count it within the month;
 ///  * yearly, with `byMonthDay`, no `byMonth`, `byWeekNo` or `byYearDay`, and
 ///    a `byDay` with `nthOfPeriod`: `byYearDay` 1 to 366. It restricts
 ///    nothing, but stops JSCalendar from adding the start month, and keeps
 ///    "the 3rd Tuesday of the year" (adding `byMonth` would make it "of each
 ///    month").
 ///
-/// One kind of rule keeps no rrule.js meaning and stays as it is: the last
-/// case with a non-Gregorian `rscale`, or with `skip` forward or backward and
-/// a month day above 28, where an invalid day moves into another month.
-Map<String, Object?> rruleMeaningInJsCalendar(Map<String, Object?> rule) {
+/// The properties are start-independent, so the result is the same for every
+/// start. Other rules are returned unchanged (as a copy).
+///
+/// Two kinds of rule may keep no rrule.js meaning; [rruleToJsCalendar]
+/// reports them to `onWarning` (in strict mode too):
+///
+///  * a non-Gregorian `rscale` where a month list would be needed: the months
+///    of the calendar are not known here, so the rule stays as it is;
+///  * the `byYearDay` case with `skip` forward or backward and a month day
+///    above 28: an invalid day that moves into another month may give other
+///    dates than rrule.js.
+Map<String, Object?> rruleMeaningInJsCalendar(Map<String, Object?> rule) =>
+    _rruleMeaning(rule).rule;
+
+bool _isGregorian(Map<String, Object?> r) =>
+    ((r['rscale'] as String?) ?? 'gregorian').toLowerCase() == 'gregorian';
+
+({Map<String, Object?> rule, String? warning}) _rruleMeaning(Map<String, Object?> rule) {
   final r = Map<String, Object?>.of(rule);
+  String? warning;
   bool has(String k) => r[k] is List && (r[k] as List).isNotEmpty;
   final allDays = [
     for (final d in _days) {'@type': 'NDay', 'day': d}
@@ -395,16 +414,24 @@ Map<String, Object?> rruleMeaningInJsCalendar(Map<String, Object?> rule) {
           final skip = r['skip'];
           final movesInvalidDays = (skip == 'forward' || skip == 'backward') &&
               (r['byMonthDay'] as List).any((d) => d is int && d.abs() > 28);
-          if (!nth) {
+          if (!_isGregorian(r)) {
+            warning = 'RFC 8984 adds the start month here; the months of '
+                'RSCALE=${(r['rscale'] as String).toUpperCase()} are not known, so the rule is '
+                'kept as it is';
+          } else if (!nth) {
             r['byMonth'] = [for (var m = 1; m <= 12; m++) '$m'];
-          } else if ((r['rscale'] ?? 'gregorian') == 'gregorian' && !movesInvalidDays) {
+          } else {
             r['byYearDay'] = [for (var d = 1; d <= 366; d++) d];
+            if (movesInvalidDays) {
+              warning = 'SKIP can move a month day above 28 into another month; the JSCalendar '
+                  'dates may differ from rrule.js';
+            }
           }
         }
         if (has('byWeekNo') && !has('byMonthDay') && !has('byDay')) r['byDay'] = allDays;
       }
   }
-  return r;
+  return (rule: r, warning: warning);
 }
 
 // ---------------------------------------------------------------------------
@@ -425,11 +452,15 @@ Map<String, Object?> rruleMeaningInJsCalendar(Map<String, Object?> rule) {
 /// With [keepJsCalendarMeaning], the RRULE gets the properties RFC 8984
 /// section 4.3.3.1 (step 3) implicitly adds for [start] (required then), so
 /// that rrule.js gives the JSCalendar occurrences: e.g. a yearly rule with
-/// only `byMonthDay` gets BYMONTH with the start month. RFC 8984 also counts
-/// the start as the first occurrence when the rule does not generate it (a
-/// weekly Friday rule from a Monday); rrule.js does not, and one RRULE cannot
-/// say it: that is reported to [onWarning], and [recurrenceToICal] adds the
-/// start as an RDATE (with one less in COUNT).
+/// only `byMonthDay` gets BYMONTH with the start month. Two cases are
+/// reported to [onWarning] (in strict mode too) and written as they are:
+///
+///  * the start is not an occurrence of the rule (a weekly Friday rule from a
+///    Monday). RFC 8984 and RFC 5545 both count the start as the first
+///    occurrence, so COUNT is written as it is, but RFC 5545 calls such a set
+///    undefined and rrule.js does not give the start;
+///  * a non-Gregorian `rscale` where a month or month day would be added: the
+///    start's date in that calendar is not computed here.
 ///
 /// Lenient by default: invalid members and values are left out (reported to
 /// [onWarning]); names may be in any case; `until` may also be a date
@@ -451,24 +482,27 @@ String? jsCalendarToRRule(Map<String, Object?> rule,
   final s = _toRRule(
       rule, untilForm, toUtc, toEventTime, start, keepJsCalendarMeaning, strict, onWarning);
   if (s != null && keepJsCalendarMeaning && start != null && !_startMatches(rule, start)) {
-    onWarning?.call('The start ${_formatLocal(start)} is not an occurrence of the rule: RFC 8984 '
-        'counts it, rrule.js does not (recurrenceToICal adds it as an RDATE): $s');
+    onWarning?.call('The start ${_formatLocal(start)} is not an occurrence of the rule: RFC 5545 '
+        'calls the recurrence set undefined, and rrule.js does not give the start: $s');
   }
   return s;
 }
 
-/// Whether rrule.js gives [start] as the first occurrence of [rule] (with the
-/// properties RFC 8984 adds for it), ignoring `count` and `until`. True when
-/// the rule cannot be expanded here (a non-Gregorian `rscale`).
+/// Whether rrule.js gives [start] as an occurrence of [rule] (with the
+/// properties RFC 8984 adds for it), ignoring `count` and `until`: the rule is
+/// expanded up to [start] only. True when the rule cannot be expanded here (a
+/// non-Gregorian `rscale`).
 bool _startMatches(Map<String, Object?> rule, DateTime start) {
   try {
+    if (!_isGregorian(rule)) return true;
     final open = {
       for (final e in rule.entries)
         if (e.key != 'count' && e.key != 'until') e.key: e.value
     };
     final s = _toRRule(open, ICalDateForm.local, null, null, start, true, false, null);
     if (s == null) return true;
-    final first = RRule(RRuleOptions.parse(s, dtstart: start)).all(limit: 1);
+    final first =
+        RRule(RRuleOptions.parse('$s;UNTIL=${_formatICal(start)}', dtstart: start)).all(limit: 1);
     return first.isNotEmpty && first.first == start;
   } catch (_) {
     return true;
@@ -488,7 +522,11 @@ String? _toRRule(
   if (r == null) return null;
   if (keepJsCalendarMeaning) {
     if (start == null) throw ArgumentError('keepJsCalendarMeaning needs the start');
-    _addImplicitProperties(r, start);
+    if (_addImplicitProperties(r, start) case final String skipped) {
+      onWarning?.call("RFC 8984 adds the start's $skipped here; the start's date in "
+          'RSCALE=${(r['rscale'] as String).toUpperCase()} is not computed, so it is left out: '
+          '$rule');
+    }
   }
   final parts = <String>['FREQ=${(r['frequency'] as String).toUpperCase()}'];
   void add(String name, String key) {
@@ -525,11 +563,23 @@ String? _toRRule(
 
 /// RFC 8984 section 4.3.3.1 step 3, the date parts (the time parts are what
 /// RFC 5545 implementations add too). Same as tools/lib/jscal.mjs and
-/// RRuleOptions.fromJsCalendar.
-void _addImplicitProperties(Map<String, Object?> r, DateTime start) {
+/// RRuleOptions.fromJsCalendar. With a non-Gregorian `rscale`, the month and
+/// month day (which need the start's date in that calendar) are not added:
+/// returns what was left out.
+String? _addImplicitProperties(Map<String, Object?> r, DateTime start) {
   bool has(String k) => r[k] is List && (r[k] as List).isNotEmpty;
   final day = _days[start.weekday - 1];
+  final gregorian = _isGregorian(r);
   final hadByDay = has('byDay'), hadByMonthDay = has('byMonthDay');
+  final skipped = <String>[];
+  void monthDay() {
+    if (gregorian) {
+      r['byMonthDay'] = [start.day];
+    } else {
+      skipped.add('month day');
+    }
+  }
+
   switch (r['frequency']) {
     case 'weekly':
       if (!hadByDay)
@@ -537,13 +587,17 @@ void _addImplicitProperties(Map<String, Object?> r, DateTime start) {
           {'@type': 'NDay', 'day': day}
         ];
     case 'monthly':
-      if (!hadByDay && !hadByMonthDay) r['byMonthDay'] = [start.day];
+      if (!hadByDay && !hadByMonthDay) monthDay();
     case 'yearly':
       if (!has('byYearDay')) {
         if (!has('byMonth') && !has('byWeekNo') && (hadByMonthDay || !hadByDay)) {
-          r['byMonth'] = ['${start.month}'];
+          if (gregorian) {
+            r['byMonth'] = ['${start.month}'];
+          } else {
+            skipped.add('month');
+          }
         }
-        if (!hadByMonthDay && !has('byWeekNo') && !hadByDay) r['byMonthDay'] = [start.day];
+        if (!hadByMonthDay && !has('byWeekNo') && !hadByDay) monthDay();
         if (has('byWeekNo') && !hadByMonthDay && !hadByDay) {
           r['byDay'] = [
             {'@type': 'NDay', 'day': day}
@@ -551,6 +605,7 @@ void _addImplicitProperties(Map<String, Object?> r, DateTime start) {
         }
       }
   }
+  return skipped.isEmpty ? null : skipped.join(' and ');
 }
 
 /// A checked copy of a RecurrenceRule: types and ranges of RFC 8984 section
@@ -665,8 +720,10 @@ Map<String, Object?>? _checkRule(Map<String, Object?> rule, _Issues issue) {
     }
   }
   r['byMonthDay'] = ints('byMonthDay', 31, signed: true);
-  r['byYearDay'] = ints('byYearDay', 366, signed: true);
-  r['byWeekNo'] = ints('byWeekNo', 53, signed: true);
+  final gregorian = _isGregorian(r);
+  r['byYearDay'] =
+      ints('byYearDay', gregorian ? maxYearDay.gregorian : maxYearDay.other, signed: true);
+  r['byWeekNo'] = ints('byWeekNo', gregorian ? maxWeekNo.gregorian : maxWeekNo.other, signed: true);
   r['byHour'] = ints('byHour', 23, min: 0);
   r['byMinute'] = ints('byMinute', 59, min: 0);
   r['bySecond'] = ints('bySecond', 60, min: 0);
@@ -929,17 +986,15 @@ ICalRecurrenceDates recurrenceOverridesToICal(Map<String, Object?> overrides,
         bool Function(DateTime recurrenceId)? isOccurrence,
         bool strict = false,
         OnWarning? onWarning}) =>
-    _overridesToICal(overrides, form, timeZone, isOccurrence, strict, onWarning, const []);
+    _overridesToICal(overrides, form, timeZone, isOccurrence, strict, onWarning);
 
-/// [recurrenceOverridesToICal], with [added] (floating) as RDATEs too.
 ICalRecurrenceDates _overridesToICal(
     Map<String, Object?> overrides,
     ICalDateForm form,
     String? timeZone,
     bool Function(DateTime recurrenceId)? isOccurrence,
     bool strict,
-    OnWarning? onWarning,
-    List<DateTime> added) {
+    OnWarning? onWarning) {
   if (form == ICalDateForm.zoned && (timeZone == null || timeZone.isEmpty)) {
     throw ArgumentError('ICalDateForm.zoned needs the time zone');
   }
@@ -994,10 +1049,6 @@ ICalRecurrenceDates _overridesToICal(
     } else if (patch.isNotEmpty) {
       rest.add(key);
     }
-  }
-  for (final d in added) {
-    final value = _formatICal(d, date: form == ICalDateForm.date, utc: form == ICalDateForm.utc);
-    if (!exdates.contains(value)) rdates.add(value);
   }
   rdates.sort();
   final params = switch (form) {
@@ -1085,10 +1136,8 @@ JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
 /// A rule without a valid frequency is left out (lenient) or throws
 /// ([strict]).
 ///
-/// With [keepJsCalendarMeaning], a start that a rule does not generate is
-/// added as an RDATE and that rule's COUNT lowered by one (a rule with
-/// `count` 1 is then left out), since RFC 8984 counts the start as the first
-/// occurrence and rrule.js does not.
+/// Each rule is written as [jsCalendarToRRule] writes it, warnings included:
+/// a start that a rule does not generate stays as it is (see there).
 ICalRecurrenceDates recurrenceToICal(
     {List<Map<String, Object?>>? recurrenceRules,
     List<Map<String, Object?>>? excludedRecurrenceRules,
@@ -1102,24 +1151,20 @@ ICalRecurrenceDates recurrenceToICal(
     bool Function(DateTime recurrenceId)? isOccurrence,
     bool strict = false,
     OnWarning? onWarning}) {
-  String? rule(Map<String, Object?> r) =>
-      _toRRule(r, form, toUtc, toEventTime, start, keepJsCalendarMeaning, strict, onWarning);
-  final rrules = <String>[];
-  final added = <DateTime>[];
-  for (final r in recurrenceRules ?? const <Map<String, Object?>>[]) {
-    var js = r;
-    if (keepJsCalendarMeaning && start != null && rule(r) != null && !_startMatches(r, start)) {
-      // RFC 8984 counts the start; rrule.js needs it as an RDATE.
-      if (added.isEmpty) added.add(start);
-      if (r['count'] case final int count when count >= 1) {
-        if (count == 1) continue;
-        js = {...r, 'count': count - 1};
-      }
-    }
-    if (rule(js) case final String s) rrules.add('RRULE:$s');
-  }
+  String? rule(Map<String, Object?> r) => jsCalendarToRRule(r,
+      untilForm: form,
+      toUtc: toUtc,
+      toEventTime: toEventTime,
+      start: start,
+      keepJsCalendarMeaning: keepJsCalendarMeaning,
+      strict: strict,
+      onWarning: onWarning);
+  final rrules = [
+    for (final r in recurrenceRules ?? const <Map<String, Object?>>[])
+      if (rule(r) case final String s) 'RRULE:$s'
+  ];
   final dates = _overridesToICal(
-      recurrenceOverrides ?? const {}, form, timeZone, isOccurrence, strict, onWarning, added);
+      recurrenceOverrides ?? const {}, form, timeZone, isOccurrence, strict, onWarning);
   return ICalRecurrenceDates([
     ...rrules,
     for (final r in excludedRecurrenceRules ?? const <Map<String, Object?>>[])
@@ -1161,23 +1206,17 @@ String _paramValue(String v) => RegExp(r'[;:,]').hasMatch(v) ? '"$v"' : v;
 
 final _duration = RegExp(r'^P(?:\d+W|(?=\d|T\d)(?:\d+D)?(?:T(?=\d)(?:\d+H)?(?:\d+M)?(?:\d+S)?)?)$');
 
-/// The JSCalendar Duration (RFC 8984 section 1.4.6) from the wall clock [a]
-/// to [b], e.g. `PT2H` or `P1DT30M`: whole days are nominal (added in the
-/// wall clock), the rest is elapsed time, from [a] plus the days to [b]. With
-/// [instant] (the UTC instant of a wall clock), the elapsed time is exact
-/// across a time change; without it, it is the wall-clock difference.
+/// The JSCalendar Duration (RFC 8984 section 1.4.6) of the time elapsed from
+/// the wall clock [a] to [b], in hours, minutes and seconds (`PT2H`, `PT24H`):
+/// RFC 8984 adds such a duration as exact time, so the end instant is kept
+/// whatever the event's time zone (nominal days would be added in the
+/// event's wall clock). With [instant] (the UTC instant of a wall clock) it is
+/// exact across a time change; without it, it is the wall-clock difference.
 String _durationBetween(DateTime a, DateTime b, [DateTime Function(DateTime)? instant]) {
   final at = instant ?? (DateTime d) => d;
-  var days = b.difference(a).inSeconds ~/ 86400;
-  int rest() => at(b).difference(at(a.add(Duration(days: days)))).inSeconds;
-  var s = rest();
-  if (s < 0 && days > 0) {
-    days--;
-    s = rest();
-  }
-  if (s < 0) s = 0;
+  final d = at(b).difference(at(a)).inSeconds;
+  final s = d < 0 ? 0 : d;
   final h = s ~/ 3600, m = s % 3600 ~/ 60, sec = s % 60;
   final time = '${h > 0 ? '${h}H' : ''}${m > 0 ? '${m}M' : ''}${sec > 0 ? '${sec}S' : ''}';
-  if (days == 0 && time.isEmpty) return 'PT0S';
-  return 'P${days > 0 ? '${days}D' : ''}${time.isEmpty ? '' : 'T$time'}';
+  return time.isEmpty ? 'PT0S' : 'PT$time';
 }
