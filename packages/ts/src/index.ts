@@ -43,9 +43,7 @@ export type {
   RecurrenceOverridesFromICalOptions,
   RecurrenceOverridesToICalOptions,
   RRuleToJsCalendarOptions,
-  ToEventTime,
-  ToInstant,
-  ToUtc,
+  TimeZones,
 } from './jscalendar'
 export { Frequency } from './types'
 export type { ByWeekday, Options } from './types'

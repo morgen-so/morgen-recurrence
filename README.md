@@ -258,13 +258,24 @@ named arguments.
 
 | | function |
 |---|---|
-| a whole recurrence: RRULE/EXRULE/EXDATE/RDATE lines → `recurrenceRules`, `excludedRecurrenceRules`, `recurrenceOverrides` | `recurrenceFromICal(lines, { toEventTime, toInstant, keepRRuleMeaning })` |
-| and back | `recurrenceToICal({ recurrenceRules, excludedRecurrenceRules, recurrenceOverrides }, { form, timeZone, toUtc, isOccurrence, start, keepJsCalendarMeaning })` |
-| one RRULE → RecurrenceRule | `rruleToJsCalendar(rrule, { toEventTime, keepRRuleMeaning })` |
-| one RecurrenceRule → RRULE | `jsCalendarToRRule(rule, { untilForm, toUtc, toEventTime, start, keepJsCalendarMeaning })` |
-| EXDATE/RDATE ↔ `recurrenceOverrides` | `recurrenceOverridesFromICal(lines, { toEventTime, toInstant })`, `recurrenceOverridesToICal(overrides, { form, timeZone, isOccurrence })` |
+| a whole recurrence: RRULE/EXRULE/EXDATE/RDATE lines → `recurrenceRules`, `excludedRecurrenceRules`, `recurrenceOverrides` | `recurrenceFromICal(lines, { timeZone, zones, keepRRuleMeaning })` |
+| and back | `recurrenceToICal({ recurrenceRules, excludedRecurrenceRules, recurrenceOverrides }, { form, timeZone, zones, isOccurrence, start, keepJsCalendarMeaning })` |
+| one RRULE → RecurrenceRule | `rruleToJsCalendar(rrule, { timeZone, zones, keepRRuleMeaning })` |
+| one RecurrenceRule → RRULE | `jsCalendarToRRule(rule, { untilForm, timeZone, zones, start, keepJsCalendarMeaning })` |
+| EXDATE/RDATE ↔ `recurrenceOverrides` | `recurrenceOverridesFromICal(lines, { timeZone, zones })`, `recurrenceOverridesToICal(overrides, { form, timeZone, isOccurrence })` |
 
 Every function also takes `strict` and `onWarning` (below).
+
+- **Time zones.** The library has no time zone data and never uses the
+  machine's zone. `timeZone` is the event's JSCalendar `timeZone` (none for a
+  floating or all-day event), and `zones` has two functions from the
+  caller's time zone library: `toInstant(wallClock, timeZone)` and
+  `fromInstant(instant, timeZone)`. `toInstant` follows RFC 5545 section
+  3.3.5: a local time that occurs twice is its first instant, and one that
+  does not occur is read with the offset before the gap (moment-timezone
+  does both). `UTC` and `Etc/UTC` need no `zones`. A value that needs
+  `timeZone` or `zones` and does not get them is reported: strict mode
+  throws, and lenient mode warns and keeps the value's fields.
 
 - **Literal by default.** Each part maps to its property, as the draft says:
   values in lower case, BYDAY to NDay objects (with `@type`), BYMONTH to
@@ -277,11 +288,10 @@ Every function also takes `strict` and `onWarning` (below).
 - **COUNT and UNTIL together** are invalid in both RFCs. Strict mode throws;
   lenient mode keeps COUNT and leaves UNTIL out, with a warning.
 - **UNTIL** is a LocalDateTime in the event's time zone. A date becomes
-  midnight, a local time stays as written, and a UTC time goes through
-  `toEventTime`. Back, it takes the form of the event's DTSTART (`form` /
-  `untilForm`: `date`, `local`, `utc`, or `zoned`, which converts to UTC with
-  `toUtc` as RFC 5545 requires). Without a converter the fields are kept: the
-  machine's time zone is never used.
+  midnight, a local time stays as written, and a UTC time becomes the wall
+  clock of `timeZone`. Back, it takes the form of the event's DTSTART (`form`
+  / `untilForm`: `date`, `local`, `utc`, or `zoned`, which converts to UTC as
+  RFC 5545 requires).
 - **Implicit properties.** RFC 8984 section 4.3.3.1 (step 3) adds properties
   that RFC 5545 implementations such as rrule.js do not. So a literal mapping
   can change the occurrences of a few rules: `FREQ=YEARLY;BYMONTHDAY=15` is the
@@ -307,33 +317,39 @@ Every function also takes `strict` and `onWarning` (below).
     The library writes the rule as it is and, with `keepJsCalendarMeaning` and
     `start`, warns. It does not rewrite the rule (for example with an RDATE for
     the start), because the rewrite does not survive reading it back.
-- **Rule parts RFC 5545 does not allow.** RFC 5545 section 3.3.10 allows
+- **What RFC 5545 does not allow in a rule.** RFC 5545 section 3.3.10 allows
   BYMONTHDAY not with WEEKLY, BYYEARDAY not with DAILY, WEEKLY or MONTHLY,
-  BYWEEKNO only with YEARLY, and a numbered BYDAY only with MONTHLY or YEARLY
-  (and not with BYWEEKNO). JSCalendar allows them all (they limit the
-  occurrences), and so does rrule.js. `jsCalendarToRRule` writes such a rule
+  BYWEEKNO only with YEARLY, a numbered BYDAY only with MONTHLY or YEARLY
+  (and not with BYWEEKNO), BYSETPOS only with another BY part, and no
+  BYHOUR, BYMINUTE or BYSECOND when the start is a date. JSCalendar allows
+  all of these, and so does rrule.js. `jsCalendarToRRule` writes such a rule
   as it is with a warning, since a calendar may reject it
-  (`FREQ=WEEKLY;BYMONTHDAY=15;BYDAY=MO`); strict mode throws. Reading such
-  an RRULE stays allowed, as providers send them.
+  (`FREQ=WEEKLY;BYMONTHDAY=15;BYDAY=MO`, `FREQ=MONTHLY;BYSETPOS=2`, or
+  `FREQ=DAILY;BYHOUR=9` with `untilForm: 'date'`); strict mode throws.
+  Reading such an RRULE stays allowed, as providers send them.
 - **Overrides.** An EXDATE is `{"excluded": true}`, an RDATE is `{}`, and an
-  RDATE PERIOD is `{"duration": …}`.
-  - A PERIOD in UTC or with a TZID becomes the elapsed time, in hours,
-    minutes and seconds (`PT24H`, not `P1D`), whether it has an explicit end
-    or a duration with days or weeks. RFC 5545 adds those days in the
-    period's own zone, and RFC 8984 would add them in the event's, so only
-    hours keep the end when the two zones differ. Pass `toInstant` so the
-    elapsed time is right across a time change: in Europe/Zurich,
-    `20250330T013000/20250330T033000` is `PT1H`, not `PT2H`; for a Zurich
-    event, `20250329T110000Z/20250330T110000Z` and `20250329T110000Z/P1D` are
-    both `PT24H` (12:00 Saturday to 13:00 Sunday). A floating PERIOD is in
-    the event's wall clock already and keeps its duration.
-  - An EXDATE also excludes RDATEs. It is matched by instant (for UTC values,
-    and TZID values with `toInstant`) before the values become keys: in the
-    hour repeated when the clocks go back, two instants have the same local
-    time. Excluding `20251026T013000Z` from the RDATEs `20251026T003000Z` and
-    `20251026T013000Z` keeps the first one, as `2025-10-26T02:30:00` in
-    Zurich. Two RDATEs left with the same key are a warning (one is kept;
-    strict mode throws), since a key names one occurrence.
+  RDATE PERIOD is `{"duration": …}`. The values are compared as UTC instants
+  first, and become keys last:
+  - A UTC value has its instant, a value with a TZID gets it from `zones`,
+    and a value without a zone is in the event's wall clock. An EXDATE
+    removes the RDATEs of its instant, and the same instant twice is one
+    RDATE, whatever zones the values are written in.
+  - A key is a local time in the event's zone, and it names one instant: of
+    a local time that occurs twice (when clocks go back), the first (RFC
+    8984 section 1.4.5). The second one has no key. In Zurich on October 26,
+    2025, `00:30Z` and `01:30Z` are both 02:30: the first is the key
+    `2025-10-26T02:30:00`, and an RDATE or EXDATE at `01:30Z` cannot be
+    written. It is left out with a warning (strict mode throws), so a round
+    trip never moves or restores an occurrence. An EXDATE that only removes
+    an RDATE of the same instant needs no key and is fine.
+  - A PERIOD's duration is kept as written when the period is in the event's
+    own wall clock (`TZID=Europe/Zurich:20250329T090000/P1D` in a Zurich
+    event stays `P1D`), or has no days or weeks. Otherwise its days are days
+    of another zone (RFC 5545 section 3.3.6), and RFC 8984 would add them in
+    the event's zone, so the duration becomes the time elapsed, in hours:
+    for a Zurich event, `20250329T110000Z/P1D` is `PT24H` (12:00 Saturday to
+    13:00 Sunday). An explicit end always becomes the time elapsed: in
+    Europe/Zurich, `20250330T013000/20250330T033000` is `PT1H`.
   - Back, an excluded patch is an EXDATE and `{}` is an RDATE. A duration-only
     patch is an RDATE PERIOD only when `isOccurrence` says the rule does not
     generate that date. Without `isOccurrence`, it is a plain RDATE and an
@@ -380,16 +396,21 @@ Tests:
   `recurrenceToICal` → `recurrenceFromICal` → `recurrenceToICal` (with the
   start and `keepJsCalendarMeaning`) gives the same lines, so a sync loop
   never changes an event.
-- Strict export throws on exactly the corpus rules whose parts RFC 5545
-  does not allow (808 of 9,425 have such parts), and lenient export warns
-  only for those.
+- Strict export throws on exactly the corpus rules that RFC 5545 does not
+  allow, and lenient export warns only for those.
 - Generated tests (`roundtrip.test.ts`, `roundtrip_test.dart`; seed in
-  `ROUNDTRIP_SEED`): 2,000 RDATE periods across time changes, in UTC and two
-  zones, with an end or a duration in days and hours, read into an event in
-  another zone, keep their end instant; 500 sets of UTC RDATEs and EXDATEs
-  around the repeated hour keep the occurrences that are not excluded (and
-  report collisions); 500 sets of overrides in each form come back from
-  their lines and are written again unchanged.
+  `ROUNDTRIP_SEED`) compare UTC instants, with the real 2025 time changes of
+  Zurich and New York (checked against the platform's zone data in
+  `zones.test.ts`):
+  - 2,000 RDATE periods around the time changes, in UTC and two zones, with
+    an end or a duration in days and hours, read into an event in another
+    zone, keep their start and end instants;
+  - 1,000 sets of UTC RDATEs and EXDATEs around the repeated hour are read,
+    written back and resolved to instants again: every added or excluded
+    instant that has a key comes back, and no other;
+  - 500 sets of overrides in each form come back from their lines and are
+    written again unchanged;
+  - 50,000 values are read in linear time.
 - Both packages give the same output for every rule in the corpus.
 
 ### What the caller adapts
@@ -417,11 +438,11 @@ function toMorgenRule(rule: JSCalendarRecurrenceRule | null): MorgenRecurrenceRu
 const DAYS: readonly string[] = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su']
 const isDay = (d: string): d is JSCalendarDay => DAYS.includes(d)
 
+/** A stored rule: desktop's and Kai's, or the backend's and the integration service's (`interval` optional). */
+type StoredRule = Omit<MorgenRecurrenceRule, 'interval'> & { interval?: number }
+
 /** A stored Morgen rule as the library's rule: weekdays checked, unknown ones left out. */
-function fromMorgenRule(
-  rule: MorgenRecurrenceRule | Omit<MorgenRecurrenceRule, 'interval'>,
-  warn?: OnWarning
-): JSCalendarRecurrenceRule {
+function fromMorgenRule(rule: StoredRule, warn?: OnWarning): JSCalendarRecurrenceRule {
   const byDay = rule.byDay?.flatMap((d): JSCalendarNDay[] => {
     const day = d.day.toLowerCase()
     if (isDay(day)) return [{ ...d, day }]
@@ -548,13 +569,13 @@ on an added date becomes an RDATE PERIOD; without it, the duration goes to
   brings deleted occurrences back.
 - Microsoft Graph needs its own pattern mapper.
 
-**Time zones.** The library never uses the machine's zone. The caller passes
-`toEventTime`, `toUtc` and `toInstant`, and normalizes zone names first
-(Windows names such as `Eastern Standard Time`), for the source zone and the
-event zone alike. UTC has many names (`UTC`, `Etc/UTC`, `GMT`, …), and the
-projects' zone libraries return different ones, so compare against all of
-them (`isUtc` below), or `form` gives `zoned` and `EXDATE;TZID=UTC:…` instead
-of `EXDATE:…Z`. See the adapter below.
+**Time zones.** The caller passes the event's `timeZone` and a `zones`
+object built on its time zone library, which also maps other zone names
+(Windows names such as `Eastern Standard Time`). UTC has many names (`UTC`,
+`Etc/UTC`, `GMT`, …), and the projects' zone libraries return different ones,
+so compare against all of them (`isUtc` below) when choosing the `form`, or
+it gives `zoned` and `EXDATE;TZID=UTC:…` instead of `EXDATE:…Z`. See the
+adapter below.
 
 **Mobile's product rules.** The Dart `jsCalendarToRRule` can replace Morgen
 Assist's own serializer, and these checks stay where they are, run on the
@@ -582,9 +603,8 @@ its own calendar library.
 
 The backend, the sync service and desktop each have a copy of
 `ICalendarService/ical.ts` with ical.js-based converters. Their replacements,
-with the time zone converters built from moment-timezone and morgen-tz-service
-(which also maps Windows zone names). Both the source zone and the event zone
-go through `iana`:
+with `zones` built from moment-timezone and morgen-tz-service (which also
+maps Windows zone names):
 
 ```ts
 const fmt = (d: Date) => d.toISOString().slice(0, 19)
@@ -593,23 +613,23 @@ const iana = (tz: string) => new TimezoneService.Timezone(tz === 'Etc/UTC' ? 'UT
 const UTC_ZONES = ['UTC', 'Etc/UTC', 'Etc/UCT', 'UCT', 'Etc/Universal', 'Universal', 'Etc/Zulu', 'Zulu',
   'GMT', 'Etc/GMT', 'Etc/GMT0', 'GMT0', 'Etc/GMT+0', 'Etc/GMT-0', 'Etc/Greenwich', 'Greenwich']
 const isUtc = (tz: string) => UTC_ZONES.includes(iana(tz))
-const toEventTime = (eventTz: string) => (wall: Date, tz: string) =>
-  floating(moment.tz(fmt(wall), iana(tz)).tz(iana(eventTz)).format('YYYY-MM-DDTHH:mm:ss'))
-const toUtc = (eventTz: string) => (wall: Date) =>
-  floating(moment.tz(fmt(wall), iana(eventTz)).utc().format('YYYY-MM-DDTHH:mm:ss'))
-const toInstant = (wall: Date, tz: string) =>
-  floating(moment.tz(fmt(wall), iana(tz)).utc().format('YYYY-MM-DDTHH:mm:ss'))
+const zones: TimeZones = {
+  toInstant: (wall, tz) => floating(moment.tz(fmt(wall), iana(tz)).utc().format('YYYY-MM-DDTHH:mm:ss')),
+  fromInstant: (instant, tz) => floating(moment.utc(fmt(instant)).tz(iana(tz)).format('YYYY-MM-DDTHH:mm:ss')),
+}
 const form = (allDay: boolean, tz?: string | null): ICalDateForm =>
   allDay ? 'date' : !tz ? 'local' : isUtc(tz) ? 'utc' : 'zoned'
 ```
 
 Desktop and Kai write an event's recurrence when it has rules, overrides or
-both, so the writer takes either as absent:
+both, so the writer takes either as absent. It takes each project's stored
+rules: with `interval` (desktop, Kai) or without (the backend, the
+integration service):
 
 ```ts
 /** The iCalendar lines of an event's recurrence: rules, overrides or both may be absent. */
 function recurrenceLines(
-  rules: MorgenRecurrenceRule[] | null | undefined,
+  rules: StoredRule[] | null | undefined,
   overrides: Record<string, unknown> | null | undefined,
   allDay: boolean,
   tz: string | null | undefined,
@@ -617,17 +637,17 @@ function recurrenceLines(
 ) {
   return recurrenceToICal(
     { recurrenceRules: (rules ?? []).map((r) => fromMorgenRule(r, onWarning)), recurrenceOverrides: overrides },
-    { form: form(allDay, tz), timeZone: tz ?? undefined, toUtc: tz ? toUtc(tz) : undefined, isOccurrence, onWarning }
+    { form: form(allDay, tz), timeZone: tz, zones, isOccurrence, onWarning }
   )
 }
 ```
 
 | old | new |
 |---|---|
-| `iCalendarRecurrencesToJSCalendar(lines, tz)` | `recurrenceFromICal(lines, { toEventTime: tz && toEventTime(tz), toInstant, onWarning })`, then `toMorgenRule` on each rule |
+| `iCalendarRecurrencesToJSCalendar(lines, tz)` | `recurrenceFromICal(lines, { timeZone: tz, zones, onWarning })`, then `toMorgenRule` on each rule |
 | `jsCalendarToICalendarRecurrences(rules, overrides, allDay, tz)` | `recurrenceLines(rules, overrides, allDay, tz, isOccurrence)`; `.properties` are the lines, `.overrides` the instances to write separately |
-| `iCalRecurrenceRuleToJSCalendarRecurrenceRule(rrule, tz)` | `toMorgenRule(rruleToJsCalendar(rrule, { toEventTime: tz && toEventTime(tz), onWarning }))` |
-| `jsCalendarRecurrenceRuleToICalRecurrenceRule(rule, allDay, tz)` | `'RRULE:' + jsCalendarToRRule(fromMorgenRule(rule, onWarning), { untilForm: form(allDay, tz), toUtc: tz && toUtc(tz), toEventTime: tz && toEventTime(tz) })` |
+| `iCalRecurrenceRuleToJSCalendarRecurrenceRule(rrule, tz)` | `toMorgenRule(rruleToJsCalendar(rrule, { timeZone: tz, zones, onWarning }))` |
+| `jsCalendarRecurrenceRuleToICalRecurrenceRule(rule, allDay, tz)` | `'RRULE:' + jsCalendarToRRule(fromMorgenRule(rule, onWarning), { untilForm: form(allDay, tz), timeZone: tz, zones })` |
 
 Differences from the `ical.ts` converters. A comparison on the corpus and on
 real-world quirks found these bugs there, fixed here:
@@ -652,8 +672,10 @@ Also different, by design:
 - `Etc/UTC` is written with `Z`, like `UTC`.
 - COUNT and UNTIL together keep COUNT only.
 - Sub-daily rules are returned (`toMorgenRule` drops them).
-- An RDATE PERIOD's duration is in hours (`PT24H`), which keeps the end in
-  any event zone.
+- An RDATE PERIOD from UTC or another zone has its duration in hours
+  (`PT24H`), which keeps the end in the event's zone.
+- A value at the second of two equal local times (when clocks go back) is
+  left out with a warning, as no recurrence id names it.
 
 ## Performance
 

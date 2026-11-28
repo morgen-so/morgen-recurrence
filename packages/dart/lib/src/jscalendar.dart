@@ -25,19 +25,37 @@
 import 'options.dart';
 import 'rrule.dart' show RRule;
 
-/// Converts the wall-clock fields [wallClock] in [timeZone] to the wall clock
-/// of the event's time zone (JSCalendar `timeZone`). [timeZone] is a TZID
-/// parameter value, or `Etc/UTC` for a value ending in `Z`.
-typedef ToEventTime = DateTime Function(DateTime wallClock, String timeZone);
+/// Conversions between the wall clock of a time zone and UTC, from the
+/// caller's time zone library. The package has no time zone data and never
+/// uses the machine's zone. Every [DateTime] holds its time in its UTC
+/// fields: a wall clock is a floating time, an instant its UTC time. The
+/// time zone is a TZID parameter value or the event's `timeZone`, as given:
+/// the functions map other names (such as Windows zone names) themselves.
+/// `UTC` and `Etc/UTC` are converted without them.
+class TimeZones {
+  /// The UTC instant of a wall clock in a zone. As RFC 5545 section 3.3.5: a
+  /// wall clock that occurs twice (when clocks go back) is its first instant,
+  /// and one that does not occur is read with the offset before the gap.
+  final DateTime Function(DateTime wallClock, String timeZone) toInstant;
 
-/// Converts the wall-clock fields [wallClock] of the event's time zone to
-/// UTC (fields of the UTC instant).
-typedef ToUtc = DateTime Function(DateTime wallClock);
+  /// The wall clock of a UTC instant in a zone.
+  final DateTime Function(DateTime instant, String timeZone) fromInstant;
 
-/// The UTC instant (its fields) of the wall clock [wallClock] in [timeZone], a
-/// TZID parameter value. Used for the duration of an RDATE PERIOD with an
-/// explicit end, which is elapsed time (RFC 5545 section 3.3.9).
-typedef ToInstant = DateTime Function(DateTime wallClock, String timeZone);
+  const TimeZones({required this.toInstant, required this.fromInstant});
+}
+
+final _utcName = RegExp(r'^(etc/)?utc$', caseSensitive: false);
+bool _isUtcName(String timeZone) => _utcName.hasMatch(timeZone);
+bool _sameZone(String? a, String? b) =>
+    a != null && b != null && (a == b || _isUtcName(a) && _isUtcName(b));
+
+/// The instant of a wall clock, or null when [zones] is needed and not given.
+DateTime? _toInstantIn(TimeZones? zones, DateTime wall, String timeZone) =>
+    _isUtcName(timeZone) ? wall : zones?.toInstant(wall, timeZone);
+
+/// The wall clock of an instant, or null when [zones] is needed and not given.
+DateTime? _fromInstantIn(TimeZones? zones, DateTime instant, String timeZone) =>
+    _isUtcName(timeZone) ? instant : zones?.fromInstant(instant, timeZone);
 
 /// Receives what lenient conversion left out or changed.
 typedef OnWarning = void Function(String message);
@@ -100,12 +118,11 @@ class _Rule {
 ///
 /// Each part maps to its property: values in lower case, BYDAY to NDay
 /// objects, BYMONTH to strings. Only the parts in [rrule] are set, so
-/// `interval` is left out unless INTERVAL is written, or [alwaysSetInterval]
-/// is set (Morgen's event schema requires it). UNTIL becomes a LocalDateTime
-/// in the event's time zone: a date is that day at midnight, a local time
-/// stays as written, and a UTC time goes through [toEventTime] (called with
-/// `Etc/UTC`; without it the UTC fields are kept, which is right for events in
-/// UTC or without a time zone).
+/// `interval` is left out unless INTERVAL is written. UNTIL becomes a
+/// LocalDateTime in the event's time zone: a date is that day at midnight, a
+/// local time stays as written, and a UTC time becomes the wall clock of
+/// [timeZone] (through [zones], unless the zone is UTC). A UTC UNTIL without
+/// them is reported (strict: throws) and keeps its UTC fields.
 ///
 /// The result is a literal mapping, as the draft defines. Evaluated as
 /// JSCalendar, a few rules then have other occurrences than rrule.js gives the
@@ -126,7 +143,8 @@ class _Rule {
 /// UNTIL together, which RFC 5545 and RFC 8984 forbid, throw with [strict];
 /// otherwise COUNT is kept and UNTIL left out (reported).
 Map<String, Object?>? rruleToJsCalendar(String rrule,
-    {ToEventTime? toEventTime,
+    {String? timeZone,
+    TimeZones? zones,
     bool keepRRuleMeaning = false,
     bool strict = false,
     OnWarning? onWarning}) {
@@ -138,6 +156,15 @@ Map<String, Object?>? rruleToJsCalendar(String rrule,
     rule.until = null;
   }
   final until = rule.until;
+  var untilWall = until?.value;
+  if (until != null && until.utc) {
+    untilWall = timeZone == null ? null : _fromInstantIn(zones, until.value, timeZone);
+    if (untilWall == null) {
+      issue("A UTC UNTIL needs the event's timeZone${timeZone == null ? '' : ' and zones'} to "
+          'become a local time; its UTC fields are kept: $rrule');
+      untilWall = until.value;
+    }
+  }
   final js = <String, Object?>{
     '@type': 'RecurrenceRule',
     'frequency': rule.freq,
@@ -159,9 +186,7 @@ Map<String, Object?>? rruleToJsCalendar(String rrule,
     if (rule.bySecond != null) 'bySecond': rule.bySecond,
     if (rule.bySetPos != null) 'bySetPosition': rule.bySetPos,
     if (rule.count != null) 'count': rule.count,
-    if (until != null)
-      'until': _formatLocal(
-          until.utc && toEventTime != null ? toEventTime(until.value, 'Etc/UTC') : until.value),
+    if (untilWall != null) 'until': _formatLocal(untilWall),
   };
   if (!keepRRuleMeaning) return js;
   final (rule: kept, :warning) = _rruleMeaning(js);
@@ -446,8 +471,13 @@ bool _isGregorian(Map<String, Object?> r) =>
 /// set, since RFC 7529 allows SKIP only with RSCALE. `until` is written in
 /// [untilForm], the form of the event's DTSTART: a date (its date part), a
 /// local time, a UTC time (the wall clock of an event in `Etc/UTC`), or, for
-/// an event with a time zone, the UTC instant that [toUtc] gives (required
-/// then, as RFC 5545 requires UTC with a TZID start).
+/// an event with a time zone, its UTC instant in [timeZone] (through [zones],
+/// both required then, as RFC 5545 requires UTC with a TZID start).
+///
+/// RFC 5545 section 3.3.10 allows less than JSCalendar: some rule parts only
+/// with some frequencies, BYSETPOS only with another BY part, and no times of
+/// day when the start is a date ([ICalDateForm.date]). Such a rule is written
+/// as it is and reported (strict: throws), since a calendar may reject it.
 ///
 /// With [keepJsCalendarMeaning], the RRULE gets the properties RFC 8984
 /// section 4.3.3.1 (step 3) implicitly adds for [start] (required then), so
@@ -466,21 +496,21 @@ bool _isGregorian(Map<String, Object?> r) =>
 /// [onWarning]); names may be in any case; `until` may also be a date
 /// (`2024-01-31`), have fractional seconds, or be a UTC time (`…Z`, or with
 /// an offset), which some stored rules have: it is then written as is for the
-/// `utc` and `zoned` forms, and through [toEventTime] (called with `Etc/UTC`)
-/// for the `local` and `date` forms. Returns null only without a valid
+/// `utc` and `zoned` forms, and as the wall clock of [timeZone] for the
+/// `local` and `date` forms. Returns null only without a valid
 /// `frequency`. With [strict], a rule that is not a valid RecurrenceRule
 /// throws a [FormatException]. Empty arrays count as absent; unknown members
 /// are ignored either way.
 String? jsCalendarToRRule(Map<String, Object?> rule,
     {ICalDateForm untilForm = ICalDateForm.local,
-    ToUtc? toUtc,
-    ToEventTime? toEventTime,
+    String? timeZone,
+    TimeZones? zones,
     DateTime? start,
     bool keepJsCalendarMeaning = false,
     bool strict = false,
     OnWarning? onWarning}) {
-  final s = _toRRule(
-      rule, untilForm, toUtc, toEventTime, start, keepJsCalendarMeaning, strict, onWarning);
+  final s =
+      _toRRule(rule, untilForm, timeZone, zones, start, keepJsCalendarMeaning, strict, onWarning);
   if (s != null && keepJsCalendarMeaning && start != null && !_startMatches(rule, start)) {
     onWarning?.call('The start ${_formatLocal(start)} is not an occurrence of the rule: RFC 5545 '
         'calls the recurrence set undefined, and rrule.js does not give the start: $s');
@@ -512,8 +542,8 @@ bool _startMatches(Map<String, Object?> rule, DateTime start) {
 String? _toRRule(
     Map<String, Object?> rule,
     ICalDateForm untilForm,
-    ToUtc? toUtc,
-    ToEventTime? toEventTime,
+    String? timeZone,
+    TimeZones? zones,
     DateTime? start,
     bool keepJsCalendarMeaning,
     bool strict,
@@ -529,7 +559,7 @@ String? _toRRule(
           '$rule');
     }
   }
-  if (_notInRfc5545(r) case final String invalid) {
+  if (_notInRfc5545(r, untilForm == ICalDateForm.date) case final String invalid) {
     issue('RFC 5545 does not allow $invalid, so a calendar may reject the rule: $rule');
   }
   final parts = <String>['FREQ=${(r['frequency'] as String).toUpperCase()}'];
@@ -542,7 +572,7 @@ String? _toRRule(
   if (interval != null && interval != 1) parts.add('INTERVAL=$interval');
   if (r['count'] != null) parts.add('COUNT=${r['count']}');
   if (r['until'] case final _Time until) {
-    parts.add('UNTIL=${_untilToICal(until, untilForm, toUtc, toEventTime)}');
+    parts.add('UNTIL=${_untilToICal(until, untilForm, timeZone, zones)}');
   }
   add('BYMONTH', 'byMonth');
   add('BYWEEKNO', 'byWeekNo');
@@ -615,26 +645,35 @@ String? _addImplicitProperties(Map<String, Object?> r, DateTime start) {
 /// A checked copy of a RecurrenceRule: types and ranges of RFC 8984 section
 /// 4.3.3, lower-case strings, empty arrays dropped, `until` read. Null for a
 /// lenient rule without a valid frequency.
-/// The rule parts RFC 5545 section 3.3.10 does not allow with the rule's
-/// frequency (JSCalendar allows them: they limit the occurrences), or null.
-/// The rrule package reads them as JSCalendar does.
-String? _notInRfc5545(Map<String, Object?> r) {
+/// What RFC 5545 section 3.3.10 does not allow in the rule (JSCalendar allows
+/// it all, and the rrule package reads it as JSCalendar does), or null: rule
+/// parts that do not go with the frequency, BYSETPOS without another BY part,
+/// and times of day for an event whose start is a date ([allDay]).
+String? _notInRfc5545(Map<String, Object?> r, bool allDay) {
   final f = r['frequency'] as String;
   bool has(String k) => r[k] is List && (r[k] as List).isNotEmpty;
-  final found = <String>[
-    if (has('byMonthDay') && f == 'weekly') 'BYMONTHDAY',
-    if (has('byYearDay') && const ['daily', 'weekly', 'monthly'].contains(f)) 'BYYEARDAY',
-    if (has('byWeekNo') && f != 'yearly') 'BYWEEKNO',
-  ];
+  String withFreq(String part) => '$part with FREQ=${f.toUpperCase()}';
   final days = (r['byDay'] as List?)?.cast<Map>() ?? const [];
-  if (days.any((d) => d['nthOfPeriod'] != null)) {
-    if (f != 'monthly' && f != 'yearly') {
-      found.add('BYDAY with a number');
-    } else if (f == 'yearly' && has('byWeekNo')) {
-      found.add('BYDAY with a number and BYWEEKNO');
-    }
-  }
-  return found.isEmpty ? null : '${found.join(', ')} with FREQ=${f.toUpperCase()}';
+  final nth = days.any((d) => d['nthOfPeriod'] != null);
+  final times = has('byHour') || has('byMinute') || has('bySecond');
+  final others = has('byMonth') ||
+      has('byWeekNo') ||
+      has('byYearDay') ||
+      has('byMonthDay') ||
+      has('byDay') ||
+      times;
+  final found = <String>[
+    if (has('byMonthDay') && f == 'weekly') withFreq('BYMONTHDAY'),
+    if (has('byYearDay') && const ['daily', 'weekly', 'monthly'].contains(f)) withFreq('BYYEARDAY'),
+    if (has('byWeekNo') && f != 'yearly') withFreq('BYWEEKNO'),
+    if (nth && f != 'monthly' && f != 'yearly')
+      withFreq('BYDAY with a number')
+    else if (nth && f == 'yearly' && has('byWeekNo'))
+      withFreq('BYDAY with a number and BYWEEKNO'),
+    if (has('bySetPosition') && !others) 'BYSETPOS without another BY part',
+    if (allDay && times) 'BYHOUR, BYMINUTE or BYSECOND for a start that is a date',
+  ];
+  return found.isEmpty ? null : found.join(', ');
 }
 
 Map<String, Object?>? _checkRule(Map<String, Object?> rule, _Issues issue) {
@@ -758,24 +797,29 @@ Map<String, Object?>? _checkRule(Map<String, Object?> rule, _Issues issue) {
   return r;
 }
 
-String _untilToICal(_Time until, ICalDateForm form, ToUtc? toUtc, ToEventTime? toEventTime) {
+String _untilToICal(_Time until, ICalDateForm form, String? timeZone, TimeZones? zones) {
   if (until.utc) {
     // A UTC `until` (lenient): as is in UTC, else in the event's wall clock.
     if (form == ICalDateForm.utc || form == ICalDateForm.zoned) {
       return _formatICal(until.value, utc: true);
     }
-    final wall = toEventTime == null ? until.value : toEventTime(until.value, 'Etc/UTC');
+    final wall =
+        (timeZone == null ? null : _fromInstantIn(zones, until.value, timeZone)) ?? until.value;
     return _formatICal(wall, date: form == ICalDateForm.date);
   }
   final d = until.value;
-  return switch (form) {
-    ICalDateForm.date => _formatICal(d, date: true),
-    ICalDateForm.local => _formatICal(d),
-    ICalDateForm.utc => _formatICal(d, utc: true),
-    ICalDateForm.zoned => toUtc == null
-        ? throw ArgumentError('An UNTIL in a time zone needs toUtc')
-        : _formatICal(toUtc(d), utc: true),
-  };
+  switch (form) {
+    case ICalDateForm.date:
+      return _formatICal(d, date: true);
+    case ICalDateForm.local:
+      return _formatICal(d);
+    case ICalDateForm.utc:
+      return _formatICal(d, utc: true);
+    case ICalDateForm.zoned:
+      final instant = timeZone == null ? null : _toInstantIn(zones, d, timeZone);
+      if (instant == null) throw ArgumentError('An UNTIL in a time zone needs timeZone and zones');
+      return _formatICal(instant, utc: true);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -870,35 +914,177 @@ List<String> _lines(String text) => [
 /// `RDATE;VALUE=DATE:20240105` or `RDATE;VALUE=PERIOD:20231223T150000Z/PT2H`
 /// (several per string, folded or not).
 ///
-/// Each value becomes a key, a LocalDateTime in the event's time zone: a date
-/// is that day at midnight, a local time stays as written, and a UTC time or
-/// one with a TZID goes through [toEventTime] (without it, the fields are
-/// kept, which is right when they are already in the event's zone). An EXDATE
-/// maps to `{"excluded": true}`, an RDATE to `{}`, or to `{"duration": …}`
-/// for a PERIOD. A PERIOD in UTC or with a TZID gets the time elapsed in its
-/// own zone, in hours (exact across a time change with [toInstant]), from an
-/// explicit end or from a duration with days or weeks (RFC 5545 adds those
-/// in the value's zone); a floating PERIOD keeps its duration as written.
+/// The values are compared as instants, then become keys:
 ///
-/// An EXDATE excludes RDATEs too (RFC 5545 section 3.8.5.1). It is matched
-/// by instant when both values have one (UTC, or a TZID with [toInstant]),
-/// else by key, before the keys are formed: in the repeated hour of a time
-/// change, two instants have one local time, and excluding one keeps the
-/// other. Two RDATE instants left with one key are reported (lenient: one is
-/// kept; strict: throws), since a key names one occurrence.
+///  1. Each value gets its UTC instant: a UTC value has it, a value with a
+///     TZID gets it from [zones], and a value without a zone is in the
+///     event's wall clock ([timeZone]). A date, and any value of an event
+///     without a time zone, has none and counts by its fields.
+///  2. An EXDATE removes the RDATEs of its instant (RFC 5545 section
+///     3.8.5.1); equal RDATEs are one.
+///  3. Each remaining value becomes a key, a LocalDateTime in the event's
+///     time zone: an EXDATE maps to `{"excluded": true}`, an RDATE to `{}`,
+///     or to `{"duration": …}` for a PERIOD.
 ///
-/// Lenient by default: other properties and values that cannot be read are
-/// left out (reported to [onWarning]); names may be in any case; a value may
-/// disagree with its VALUE type; an EXDATE PERIOD counts by its start. With
-/// [strict], these throw a [FormatException].
+/// A key names one instant: of a local time that occurs twice (when clocks go
+/// back), the first (RFC 8984 section 1.4.5). A value at the second one, from
+/// UTC or another zone, has no key, so it is reported and left out (an
+/// EXDATE that only removes an RDATE needs none).
+///
+/// A PERIOD's duration is kept as written when the period is in the event's
+/// own wall clock or has no days or weeks. Otherwise its days are days of
+/// another zone (RFC 5545 section 3.3.6), and it becomes the time elapsed,
+/// in hours (`PT24H`). An explicit end always becomes the time elapsed.
+///
+/// A value that needs [timeZone] or [zones] and does not get them is
+/// reported; its fields are then kept (and a duration is the wall-clock
+/// difference). Lenient by default: what is reported goes to [onWarning],
+/// and other properties and values that cannot be read are left out; names
+/// may be in any case; a value may disagree with its VALUE type; an EXDATE
+/// PERIOD counts by its start. With [strict], all of these throw a
+/// [FormatException].
 Map<String, Map<String, Object?>> recurrenceOverridesFromICal(Iterable<String> properties,
-    {ToEventTime? toEventTime, ToInstant? toInstant, bool strict = false, OnWarning? onWarning}) {
+    {String? timeZone, TimeZones? zones, bool strict = false, OnWarning? onWarning}) {
   final issue = _Issues(strict, onWarning);
-  // Each value with its key and, when known, its instant: an EXDATE removes
-  // the RDATEs of its instant (two instants can have one local time, in the
-  // repeated hour of a time change), then what is left becomes the keys.
-  final rdates = <({String key, DateTime? instant, Map<String, Object?> patch})>[];
-  final exdates = <({String key, DateTime? instant})>[];
+  final event = timeZone;
+
+  // The zone a value is written in: null for the event's own wall clock (or a date).
+  String? sourceOf(_Time v, String? tzid) {
+    final source = v.date ? null : (v.utc ? 'Etc/UTC' : tzid);
+    return source == null || _sameZone(source, event) ? null : source;
+  }
+
+  // A value's key, its instant if it has one, and whether the key names that instant.
+  _Resolved resolve(_DateItem item) {
+    final v = item.start;
+    final source = sourceOf(v, item.tzid);
+    if (source == null) {
+      final instant = !v.date && event != null ? _toInstantIn(zones, v.value, event) : null;
+      return (
+        key: _formatLocal(v.value),
+        instant: instant?.millisecondsSinceEpoch,
+        named: true,
+        text: item.text
+      );
+    }
+    final instant = _toInstantIn(zones, v.value, source);
+    final wall = instant != null && event != null ? _fromInstantIn(zones, instant, event) : null;
+    if (instant == null || wall == null) {
+      final missing = event == null ? "the event's timeZone" : 'zones';
+      issue('${item.text} is in $source and needs $missing to become a recurrence id; '
+          'its fields are kept');
+      return (
+        key: _formatLocal(v.value),
+        instant: instant?.millisecondsSinceEpoch,
+        named: true,
+        text: item.text
+      );
+    }
+    final at = instant.millisecondsSinceEpoch;
+    final named = _toInstantIn(zones, wall, event!)?.millisecondsSinceEpoch == at;
+    return (key: _formatLocal(wall), instant: at, named: named, text: item.text);
+  }
+
+  // The JSCalendar duration of a period.
+  String? durationOf(_DateItem item) {
+    final a = item.start;
+    final source = sourceOf(a, item.tzid);
+    final duration = item.duration, end = item.end;
+    if (duration != null) {
+      if (source == null || !RegExp('[DW]').hasMatch(duration)) return duration;
+      if (_toInstantIn(zones, a.value, source) == null) {
+        issue('The days of ${item.text} are days in $source: zones is needed for the time '
+            'elapsed; the duration is kept');
+        return duration;
+      }
+      return _exactDuration(a.value, duration, (d) => _toInstantIn(zones, d, source)!);
+    }
+    if (end == null) return null;
+    final zone = a.date ? null : (source ?? event);
+    if (zone == null) return _durationBetween(a.value, end.value);
+    if (_toInstantIn(zones, a.value, zone) == null) {
+      issue('${item.text} is in $zone: zones is needed for the time elapsed; the wall-clock '
+          'difference is used');
+      return _durationBetween(a.value, end.value);
+    }
+    return _durationBetween(a.value, end.value, (d) => _toInstantIn(zones, d, zone)!);
+  }
+
+  final exdates = <_Resolved>[], rdates = <_Resolved>[];
+  final patches = <Map<String, Object?>>[];
+  for (final item in _dateItems(properties, strict, issue)) {
+    final r = resolve(item);
+    if (item.exdate) {
+      exdates.add(r);
+    } else {
+      final duration = durationOf(item);
+      rdates.add(r);
+      patches.add({if (duration != null) 'duration': duration});
+    }
+  }
+
+  // Two values are the same occurrence when their instants are equal, or,
+  // when one has none, their keys.
+  bool Function(_Resolved) index(List<_Resolved> values) {
+    final instants = <int>{}, keys = <String>{}, keysWithoutInstant = <String>{};
+    for (final v in values) {
+      keys.add(v.key);
+      final i = v.instant;
+      if (i != null) {
+        instants.add(i);
+      } else {
+        keysWithoutInstant.add(v.key);
+      }
+    }
+    return (v) => v.instant != null
+        ? instants.contains(v.instant) || keysWithoutInstant.contains(v.key)
+        : keys.contains(v.key);
+  }
+
+  final isExcluded = index(exdates), isAdded = index(rdates);
+  String second(_Resolved v) => '${v.text} is the second ${v.key} of an hour that occurs twice '
+      'in $event, which no recurrence id names';
+
+  final out = <String, Map<String, Object?>>{};
+  for (final e in exdates) {
+    if (e.named) {
+      out[e.key] = {'excluded': true};
+    } else if (!isAdded(e)) {
+      // The second of two equal local times: fine if it only removes an RDATE.
+      issue('EXDATE ${second(e)}; it is left out');
+    }
+  }
+  for (var i = 0; i < rdates.length; i++) {
+    final r = rdates[i];
+    if (isExcluded(r)) continue;
+    if (r.named) {
+      out[r.key] = patches[i];
+    } else {
+      issue('RDATE ${second(r)}; it is left out');
+    }
+  }
+  return {for (final k in out.keys.toList()..sort()) k: out[k]!};
+}
+
+/// An EXDATE or RDATE value as read: a PERIOD has a [duration] or an explicit
+/// [end]; [text] is the value as written, for messages.
+typedef _DateItem = ({
+  bool exdate,
+  _Time start,
+  String? tzid,
+  String? duration,
+  _Time? end,
+  String text
+});
+
+/// A value with its key, its instant if known, and whether the key names
+/// that instant.
+typedef _Resolved = ({String key, int? instant, bool named, String text});
+
+/// The values of EXDATE and RDATE lines; what cannot be read is reported and
+/// left out.
+List<_DateItem> _dateItems(Iterable<String> properties, bool strict, _Issues issue) {
+  final out = <_DateItem>[];
   for (final text in properties) {
     for (final line in _lines(text)) {
       final ({String name, Map<String, String> params, String value}) p;
@@ -929,99 +1115,58 @@ Map<String, Map<String, Object?>> recurrenceOverridesFromICal(Iterable<String> p
         return v;
       }
 
-      // The instant of a value (UTC, or with a TZID and toInstant), if known.
-      String? zoneOf(_Time v) => v.utc ? 'Etc/UTC' : (v.date ? null : tzid);
-      DateTime Function(DateTime)? instantOf(_Time v) {
-        if (v.utc) return (d) => d;
-        final zone = zoneOf(v);
-        return zone != null && toInstant != null ? (d) => toInstant(d, zone) : null;
-      }
-
-      ({String key, DateTime? instant}) id(_Time v) {
-        final zone = zoneOf(v);
-        return (
-          key: _formatLocal(
-              zone != null && toEventTime != null ? toEventTime(v.value, zone) : v.value),
-          instant: instantOf(v)?.call(v.value),
-        );
-      }
-
-      for (final item in p.value.split(',')) {
-        if (item.trim().isEmpty) continue;
+      for (final raw in p.value.split(',')) {
+        final item = raw.trim();
+        if (item.isEmpty) continue;
         final slash = item.indexOf('/');
         if (name == 'EXDATE') {
-          final v = read(slash < 0 ? item.trim() : item.substring(0, slash).trim());
-          if (v != null) exdates.add(id(v));
+          final start = read(slash < 0 ? item : item.substring(0, slash).trim());
+          if (start != null) {
+            out.add(
+                (exdate: true, start: start, tzid: tzid, duration: null, end: null, text: item));
+          }
         } else if (type == 'PERIOD' || (!strict && slash >= 0)) {
           if (slash < 0) {
             issue('Invalid PERIOD: $item');
             continue;
           }
-          final a = read(item.substring(0, slash).trim());
-          if (a == null) continue;
+          final start = read(item.substring(0, slash).trim());
+          if (start == null) continue;
           final end = item.substring(slash + 1).trim();
-          // The local time of a value without a time zone is the event's.
-          final instant = zoneOf(a) != null ? instantOf(a) ?? (DateTime d) => d : null;
           String? duration;
+          _Time? endTime;
           if (end.startsWith('P') || end.startsWith('+P')) {
             final d = end.replaceFirst('+', '');
-            if (!_duration.hasMatch(d)) {
-              issue('Invalid duration: $end');
+            if (_duration.hasMatch(d)) {
+              duration = d;
             } else {
-              // Days and weeks are added in the value's time zone (RFC 5545
-              // section 3.3.6), so they become the time elapsed there.
-              duration = instant != null && RegExp('[DW]').hasMatch(d)
-                  ? _exactDuration(a.value, d, instant)
-                  : d;
+              issue('Invalid duration: $end');
             }
           } else {
             final b = strict ? _icalValue(end) : _lenientTime(end, 'RDATE', issue);
-            if (b != null) {
-              if (b.value.isBefore(a.value)) {
-                issue('PERIOD ends before it starts: $item');
-              } else {
-                duration = _durationBetween(a.value, b.value, a.date ? null : instant);
-              }
+            if (b != null && b.value.isBefore(start.value)) {
+              issue('PERIOD ends before it starts: $item');
+            } else {
+              endTime = b;
             }
           }
-          final i = id(a);
-          rdates.add((
-            key: i.key,
-            instant: i.instant,
-            patch: {if (duration != null) 'duration': duration}
+          out.add((
+            exdate: false,
+            start: start,
+            tzid: tzid,
+            duration: duration,
+            end: endTime,
+            text: item
           ));
         } else {
-          final v = read(item.trim());
-          if (v != null) {
-            final i = id(v);
-            rdates.add((key: i.key, instant: i.instant, patch: {}));
+          final start = read(item);
+          if (start != null) {
+            out.add(
+                (exdate: false, start: start, tzid: tzid, duration: null, end: null, text: item));
           }
         }
       }
     }
-  }
-  bool same(({String key, DateTime? instant}) a, ({String key, DateTime? instant}) b) =>
-      a.instant != null && b.instant != null ? a.instant == b.instant : a.key == b.key;
-  final kept = [
-    for (final r in rdates)
-      if (!exdates.any((e) => same(e, (key: r.key, instant: r.instant)))) r
-  ];
-  final out = <String, Map<String, Object?>>{};
-  for (final k in ({...rdates.map((r) => r.key), ...exdates.map((e) => e.key)}.toList()..sort())) {
-    final here = [
-      for (final r in kept)
-        if (r.key == k) r
-    ];
-    if (here.isEmpty) {
-      if (exdates.any((e) => e.key == k)) out[k] = {'excluded': true};
-      continue;
-    }
-    final instants = {for (final r in here) r.instant};
-    if (instants.length > 1) {
-      issue('RDATE values at ${instants.length} instants have the same local time $k in the '
-          "event's time zone; one is kept");
-    }
-    out[k] = here.last.patch;
   }
   return out;
 }
@@ -1167,15 +1312,15 @@ class JsCalendarRecurrence {
 /// RDATE lines, e.g. a Google event's `recurrence` array) as JSCalendar
 /// `recurrenceRules`, `excludedRecurrenceRules` and `recurrenceOverrides`.
 ///
-/// Each RRULE and EXRULE goes through [rruleToJsCalendar] (with
-/// [toEventTime] and [keepRRuleMeaning]); a rule without a readable
+/// Each RRULE and EXRULE goes through [rruleToJsCalendar] (with [timeZone],
+/// [zones] and [keepRRuleMeaning]); a rule without a readable
 /// frequency is left out. EXDATE and RDATE go through
 /// [recurrenceOverridesFromICal]. DTSTART lines are ignored. Lenient by
 /// default: other lines are left out (reported to [onWarning]); with
 /// [strict], they and any problem of the parts throw a [FormatException].
 JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
-    {ToEventTime? toEventTime,
-    ToInstant? toInstant,
+    {String? timeZone,
+    TimeZones? zones,
     bool keepRRuleMeaning = false,
     bool strict = false,
     OnWarning? onWarning}) {
@@ -1188,7 +1333,8 @@ JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
       switch (name) {
         case 'RRULE' || 'EXRULE':
           final rule = rruleToJsCalendar(line,
-              toEventTime: toEventTime,
+              timeZone: timeZone,
+              zones: zones,
               keepRRuleMeaning: keepRRuleMeaning,
               strict: strict,
               onWarning: onWarning);
@@ -1206,12 +1352,12 @@ JsCalendarRecurrence recurrenceFromICal(Iterable<String> properties,
       rules,
       excluded,
       recurrenceOverridesFromICal(dates,
-          toEventTime: toEventTime, toInstant: toInstant, strict: strict, onWarning: onWarning));
+          timeZone: timeZone, zones: zones, strict: strict, onWarning: onWarning));
 }
 
 /// JSCalendar `recurrenceRules`, `excludedRecurrenceRules` and
 /// `recurrenceOverrides` as iCalendar lines: `RRULE:…` and `EXRULE:…` from
-/// [jsCalendarToRRule] (with `until` in [form], [toUtc], [toEventTime],
+/// [jsCalendarToRRule] (with `until` in [form], [timeZone], [zones],
 /// [start] and [keepJsCalendarMeaning]), then EXDATE and RDATE from
 /// [recurrenceOverridesToICal] (with [form], [timeZone] and [isOccurrence]).
 /// A rule without a valid frequency is left out (lenient) or throws
@@ -1225,8 +1371,7 @@ ICalRecurrenceDates recurrenceToICal(
     Map<String, Object?>? recurrenceOverrides,
     ICalDateForm form = ICalDateForm.local,
     String? timeZone,
-    ToUtc? toUtc,
-    ToEventTime? toEventTime,
+    TimeZones? zones,
     DateTime? start,
     bool keepJsCalendarMeaning = false,
     bool Function(DateTime recurrenceId)? isOccurrence,
@@ -1234,8 +1379,8 @@ ICalRecurrenceDates recurrenceToICal(
     OnWarning? onWarning}) {
   String? rule(Map<String, Object?> r) => jsCalendarToRRule(r,
       untilForm: form,
-      toUtc: toUtc,
-      toEventTime: toEventTime,
+      timeZone: timeZone,
+      zones: zones,
       start: start,
       keepJsCalendarMeaning: keepJsCalendarMeaning,
       strict: strict,

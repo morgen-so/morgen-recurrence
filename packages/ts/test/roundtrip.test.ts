@@ -1,7 +1,9 @@
-// Generated round trips of recurrence overrides and RDATE periods (the Dart
-// package runs the same properties in packages/dart/test/roundtrip_test.dart).
-// The corpus round trips of rules are in conformance.test.ts.
+// Generated round trips of recurrence overrides and RDATE periods, compared
+// as UTC instants (the Dart package runs the same properties in
+// packages/dart/test/roundtrip_test.dart). The corpus round trips of rules
+// are in conformance.test.ts.
 import { ICalDateForm, recurrenceOverridesFromICal, recurrenceOverridesToICal } from '../src/index'
+import { representable, ZONE_NAMES, zones } from './zones'
 
 /** A small seeded generator (mulberry32), so a failure can be replayed. */
 function random(seed: number) {
@@ -14,78 +16,129 @@ function random(seed: number) {
 }
 const SEED = Number(process.env.ROUNDTRIP_SEED ?? 1)
 const RUNS = 2000
+const MINUTE = 60_000
+const DAY = 86_400_000
 
 const fmt = (d: Date) => d.toISOString().slice(0, 19)
-const HOUR = 3_600_000
+const iso = (instant: number) => fmt(new Date(instant))
+const ical = (d: Date) => fmt(d).replace(/[-:]/g, '')
+const icalUtc = (instant: number) => `${ical(new Date(instant))}Z`
+const wallOf = (instant: number, zone: string) => zones.fromInstant(new Date(instant), zone)
+const instantOf = (wall: Date, zone: string) => zones.toInstant(wall, zone).getTime()
+/** A value written as `20250105T090000`. */
+const parseICal = (s: string) =>
+  new Date(`${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(9, 11)}:${s.slice(11, 13)}:${s.slice(13, 15)}Z`)
 
 /**
- * Zones with a time change in March 2025: the UTC instant of each change and
- * the offsets before and after it (hours).
+ * The end of a JSCalendar duration from a start instant in the event's zone
+ * (RFC 8984 section 1.4.6): weeks and days on the wall clock, then exact time.
  */
-const ZONES: Record<string, { change: number; before: number; after: number }> = {
-  'Europe/Zurich': { change: Date.UTC(2025, 2, 30, 1), before: 1, after: 2 },
-  'America/New_York': { change: Date.UTC(2025, 2, 9, 7), before: -5, after: -4 },
-  'Etc/UTC': { change: 0, before: 0, after: 0 },
+function addDuration(start: number, duration: string, zone: string): number {
+  const m = /^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(duration)
+  if (!m) throw new Error(`Unexpected duration ${duration}`)
+  const n = (i: number) => Number(m[i] ?? 0)
+  const days = n(1) * 7 + n(2)
+  const wall = new Date(wallOf(start, zone).getTime() + days * DAY)
+  return instantOf(wall, zone) + (n(3) * 3600 + n(4) * 60 + n(5)) * 1000
 }
-const offset = (zone: string, instant: number) => {
-  const z = ZONES[zone]
-  return (instant < z.change ? z.before : z.after) * HOUR
-}
-/** The wall clock of an instant. */
-const wall = (zone: string, instant: number) => new Date(instant + offset(zone, instant))
-/** The instant of a wall clock (a skipped time is read with the offset before the change). */
-const toInstant = (w: Date, zone: string) => {
-  const z = ZONES[zone]
-  const before = w.getTime() - z.before * HOUR
-  return new Date(before < z.change ? before : w.getTime() - z.after * HOUR)
-}
-const toEventTime = (eventZone: string) => (w: Date, zone: string) => wall(eventZone, toInstant(w, zone).getTime())
 
-/** Parses a duration of hours, minutes and seconds (what the converter writes). */
-const seconds = (d: string) => {
-  const m = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(d)
-  if (!m) throw new Error(`Unexpected duration ${d}`)
-  return Number(m[1] ?? 0) * 3600 + Number(m[2] ?? 0) * 60 + Number(m[3] ?? 0)
+/** The instants of the EXDATE and RDATE values written for an event in `zone`. */
+function written(properties: string[], zone: string) {
+  const out = { exdates: [] as number[], rdates: [] as number[] }
+  for (const line of properties) {
+    const values = line.slice(line.indexOf(':') + 1).split(',').map((v) => instantOf(parseICal(v.split('/')[0]), zone))
+    ;(line.startsWith('EXDATE') ? out.exdates : out.rdates).push(...values)
+  }
+  return out
 }
-const icalUtc = (instant: number) => fmt(new Date(instant)).replace(/[-:]/g, '') + 'Z'
-const icalLocal = (w: Date) => fmt(w).replace(/[-:]/g, '')
 
-describe('RDATE periods keep their end instant', () => {
+describe('RDATE periods keep their start and end instants', () => {
   const next = random(SEED)
-  const zones = Object.keys(ZONES)
+  const int = (n: number) => Math.floor(next() * n)
   for (let i = 0; i < RUNS; i++) {
-    // Starts from Mar 7 to Apr 1, 2025, ends up to three days later, on whole minutes.
-    const start = Date.UTC(2025, 2, 7) + Math.floor(next() * 25 * 24 * 60) * 60_000
-    const end = start + Math.floor(next() * 3 * 24 * 60) * 60_000
-    const source = zones[Math.floor(next() * zones.length)]
-    const eventZone = zones[Math.floor(next() * 2)]
+    // Starts around the time changes of March and of October/November 2025,
+    // on whole minutes; ends up to three days later.
+    const from = next() < 0.5 ? Date.UTC(2025, 2, 7) : Date.UTC(2025, 9, 20)
+    const start = from + int(25 * 24 * 60) * MINUTE
+    const source = ZONE_NAMES[int(ZONE_NAMES.length)]
+    const eventZone = ZONE_NAMES[int(ZONE_NAMES.length)]
     const utc = source === 'Etc/UTC'
-    const sw = wall(source, start)
-    const ew = wall(source, end)
-    // A wall clock in a skipped hour does not name the instant: leave it out.
-    if (toInstant(sw, source).getTime() !== start || toInstant(ew, source).getTime() !== end) continue
-    // Half the periods end with a duration of days (added to the wall clock
-    // of the source zone, RFC 5545 section 3.3.6) and exact time.
-    const days = Math.floor(next() * 3)
-    const exact = Math.floor(next() * 24 * 60) * 60
+    // The end: an explicit one, or a duration of days (added on the wall
+    // clock of the source zone, RFC 5545 section 3.3.6) and exact time.
+    const days = int(3)
+    const exact = int(24 * 60) * 60
     const useDuration = next() < 0.5
-    const dayEnd = new Date(sw.getTime() + days * 86_400_000)
-    const durationEnd = toInstant(dayEnd, source).getTime() + exact * 1000
-    if (useDuration && wall(source, toInstant(dayEnd, source).getTime()).getTime() !== dayEnd.getTime()) continue
-    const expectedEnd = useDuration ? durationEnd : end
-    const value = utc ? icalUtc(start) : icalLocal(sw)
+    const sw = wallOf(start, source)
+    const end = useDuration
+      ? instantOf(new Date(sw.getTime() + days * DAY), source) + exact * 1000
+      : start + int(3 * 24 * 60) * MINUTE
+    const ew = wallOf(end, source)
+    // A wall clock that does not name its instant cannot be written: leave it out.
+    if (instantOf(sw, source) !== start || (!useDuration && instantOf(ew, source) !== end)) continue
+    const value = utc ? icalUtc(start) : ical(sw)
     const endValue = useDuration
       ? `P${days ? `${days}D` : ''}T${Math.floor(exact / 3600)}H${(exact % 3600) / 60}M`
-      : utc ? icalUtc(end) : icalLocal(ew)
-    const line = utc
-      ? `RDATE;VALUE=PERIOD:${value}/${endValue}`
-      : `RDATE;TZID=${source};VALUE=PERIOD:${value}/${endValue}`
+      : utc ? icalUtc(end) : ical(ew)
+    const line = `RDATE${utc ? '' : `;TZID=${source}`};VALUE=PERIOD:${value}/${endValue}`
     it(`${i}: ${line} in ${eventZone}`, () => {
-      const got = recurrenceOverridesFromICal([line], { toEventTime: toEventTime(eventZone), toInstant, strict: true })
-      const [[key, patch]] = Object.entries(got) as [string, { duration: string }][]
-      const s = toInstant(new Date(`${key}Z`), eventZone).getTime()
-      expect(fmt(new Date(s))).toBe(fmt(new Date(start)))
-      expect(fmt(new Date(s + seconds(patch.duration) * 1000))).toBe(fmt(new Date(expectedEnd)))
+      const read = () => recurrenceOverridesFromICal([line], { timeZone: eventZone, zones, strict: true })
+      if (!representable(start, eventZone)) {
+        // The second of two equal local times has no recurrence id.
+        expect(read).toThrow()
+        return
+      }
+      const [[key, patch]] = Object.entries(read()) as [string, { duration: string }][]
+      const s = instantOf(new Date(`${key}Z`), eventZone)
+      expect(iso(s)).toBe(iso(start))
+      expect(iso(addDuration(s, patch.duration, eventZone))).toBe(iso(end))
+    })
+  }
+})
+
+describe('EXDATE and RDATE sets keep their instants through a round trip', () => {
+  const next = random(SEED + 2)
+  const int = (n: number) => Math.floor(next() * n)
+  for (let i = 0; i < RUNS / 2; i++) {
+    // Values every 30 minutes from 23:00Z to 03:00Z around the hour Zurich
+    // repeats (Oct 26, 2025: 00:00Z-00:59Z and 01:00Z-01:59Z are both
+    // 02:00-02:59), for an event in Zurich, New York or UTC.
+    const pick = () => {
+      const out = new Set<number>()
+      const n = int(5)
+      for (let k = 0; k < n; k++) out.add(Date.UTC(2025, 9, 25, 23) + int(9) * 30 * MINUTE)
+      return [...out].sort((a, b) => a - b)
+    }
+    const rdates = pick()
+    const exdates = pick()
+    const zone = ZONE_NAMES[int(ZONE_NAMES.length)]
+    if (!rdates.length && !exdates.length) continue
+    const lines = [
+      ...(rdates.length ? [`RDATE:${rdates.map(icalUtc).join(',')}`] : []),
+      ...(exdates.length ? [`EXDATE:${exdates.map(icalUtc).join(',')}`] : []),
+    ]
+    it(`${i}: ${lines.join(' ')} in ${zone}`, () => {
+      // RFC 5545: the added instants are the RDATEs without the EXDATEs.
+      const added = rdates.filter((r) => !exdates.includes(r))
+      // What a recurrence id cannot name: an added instant, or an excluded
+      // one that is not just the removal of an RDATE.
+      const lost = [...added, ...exdates.filter((e) => !rdates.includes(e))].filter((x) => !representable(x, zone))
+      const warnings: string[] = []
+      const options = { timeZone: zone, zones }
+      const overrides = recurrenceOverridesFromICal(lines, { ...options, onWarning: (m) => warnings.push(m) })
+      expect(warnings.length > 0).toBe(lost.length > 0)
+      if (lost.length) expect(() => recurrenceOverridesFromICal(lines, { ...options, strict: true })).toThrow()
+      else expect(recurrenceOverridesFromICal(lines, { ...options, strict: true })).toEqual(overrides)
+
+      // Written back for the event, the lines name these instants:
+      const back = recurrenceOverridesToICal(overrides, { form: 'zoned', timeZone: zone, isOccurrence: () => false })
+      const got = written(back.properties, zone)
+      // every added instant that has a recurrence id, and no other (an
+      // excluded occurrence never comes back);
+      expect(got.rdates.map(iso)).toEqual(added.filter((r) => representable(r, zone)).map(iso))
+      // every excluded instant that has one, and no other.
+      expect(got.exdates.map(iso)).toEqual(exdates.filter((e) => representable(e, zone)).map(iso))
+      // And reading those lines gives the same overrides again.
+      expect(recurrenceOverridesFromICal(back.properties, { ...options, strict: true })).toEqual(overrides)
     })
   }
 })
@@ -95,6 +148,7 @@ describe('recurrence overrides round trip', () => {
   const forms: ICalDateForm[] = ['local', 'utc', 'zoned', 'date']
   for (let i = 0; i < RUNS / 4; i++) {
     const form = forms[i % forms.length]
+    const timeZone = form === 'zoned' ? 'Europe/Zurich' : form === 'utc' ? 'Etc/UTC' : undefined
     const overrides: Record<string, Record<string, unknown>> = {}
     const occurrences = new Set<string>()
     const n = 1 + Math.floor(next() * 6)
@@ -114,14 +168,9 @@ describe('recurrence overrides round trip', () => {
               : { title: 'Moved' }
     }
     it(`${i}: ${form} ${JSON.stringify(overrides)}`, () => {
-      const options = {
-        form,
-        timeZone: form === 'zoned' ? 'Europe/Zurich' : undefined,
-        isOccurrence: (id: Date) => occurrences.has(fmt(id)),
-        strict: true,
-      }
+      const options = { form, timeZone, isOccurrence: (id: Date) => occurrences.has(fmt(id)), strict: true }
       const first = recurrenceOverridesToICal(overrides, options)
-      const back = recurrenceOverridesFromICal(first.properties, { strict: true })
+      const back = recurrenceOverridesFromICal(first.properties, { timeZone, zones, strict: true })
       // What the lines hold comes back...
       for (const [key, patch] of Object.entries(overrides)) {
         const got = back[key] as Record<string, unknown> | undefined
@@ -139,45 +188,12 @@ describe('recurrence overrides round trip', () => {
   }
 })
 
-describe('EXDATE and RDATE in the repeated hour', () => {
-  // Zurich on Oct 26, 2025: +02:00 until 01:00Z, then +01:00, so 00:00Z to
-  // 00:59Z and 01:00Z to 01:59Z have the same local times, 02:00 to 02:59.
-  const change = Date.UTC(2025, 9, 26, 1)
-  const local = (instant: number) => fmt(new Date(instant + (instant < change ? 2 : 1) * HOUR))
-  const zurich = (w: Date, zone: string) => {
-    if (zone === 'Etc/UTC') return w
-    const before = w.getTime() - 2 * HOUR
-    return new Date(before < change ? before : w.getTime() - HOUR)
-  }
-  const toEventTime = (w: Date, zone: string) => new Date(`${local(zurich(w, zone).getTime())}Z`)
-  const next = random(SEED + 2)
-  for (let i = 0; i < RUNS / 4; i++) {
-    // Values every 30 minutes from 23:00Z to 03:00Z.
-    const pick = () => {
-      const out = new Set<number>()
-      const n = Math.floor(next() * 5)
-      for (let k = 0; k < n; k++) out.add(Date.UTC(2025, 9, 25, 23) + Math.floor(next() * 9) * HOUR / 2)
-      return [...out].sort()
-    }
-    const rdates = pick()
-    const exdates = pick()
-    if (!rdates.length && !exdates.length) continue
-    const lines = [
-      ...(rdates.length ? [`RDATE:${rdates.map(icalUtc).join(',')}`] : []),
-      ...(exdates.length ? [`EXDATE:${exdates.map(icalUtc).join(',')}`] : []),
-    ]
-    it(`${i}: ${lines.join(' ')}`, () => {
-      // An EXDATE removes the RDATE of its instant; what is left is kept.
-      const kept = rdates.filter((r) => !exdates.includes(r))
-      const expected: Record<string, unknown> = {}
-      for (const e of exdates) expected[local(e)] = { excluded: true }
-      for (const r of kept) expected[local(r)] = {}
-      const collisions = new Set(kept.map(local)).size !== kept.length
-      const warnings: string[] = []
-      const got = recurrenceOverridesFromICal(lines, { toEventTime, toInstant: zurich, onWarning: (m) => warnings.push(m) })
-      expect(got).toEqual(expected)
-      expect(warnings.length > 0).toBe(collisions)
-      if (collisions) expect(() => recurrenceOverridesFromICal(lines, { toEventTime, toInstant: zurich, strict: true })).toThrow()
-    })
-  }
+it('reads 50,000 RDATEs and EXDATEs in linear time', () => {
+  const values = (from: number) => Array.from({ length: 25_000 }, (_, k) => icalUtc(from + k * 2 * 3_600_000)).join(',')
+  const lines = [`RDATE:${values(Date.UTC(2000, 0, 1))}`, `EXDATE:${values(Date.UTC(2003, 0, 1))}`]
+  const started = Date.now()
+  const got = recurrenceOverridesFromICal(lines, { timeZone: 'Europe/Zurich', zones })
+  // A quadratic scan takes minutes here; a linear one well under a second.
+  expect(Date.now() - started).toBeLessThan(5000)
+  expect(Object.keys(got).length).toBeGreaterThan(25_000)
 })

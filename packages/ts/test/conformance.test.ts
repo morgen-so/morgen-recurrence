@@ -73,14 +73,16 @@ function normalJs(rule: JSCalendarRecurrenceRule): string {
 
 /**
  * Whether the RRULE has rule parts RFC 5545 section 3.3.10 does not allow
- * with its FREQ (rrule.js reads them, as JSCalendar does): strict
+ * with its FREQ, or BYSETPOS alone (rrule.js reads them, as JSCalendar does): strict
  * jsCalendarToRRule throws on such a rule, lenient warns.
  */
 function notInRfc5545(rrule: string): boolean {
   const f = /FREQ=(\w+)/.exec(rrule)?.[1] ?? ''
   const has = (part: string) => new RegExp(`(^|;)${part}=`).test(rrule)
   const nth = /(^|;)BYDAY=[^;]*\d/.test(rrule)
+  const others = ['BYMONTH', 'BYWEEKNO', 'BYYEARDAY', 'BYMONTHDAY', 'BYDAY', 'BYHOUR', 'BYMINUTE', 'BYSECOND']
   return (
+    (has('BYSETPOS') && !others.some(has)) ||
     (has('BYMONTHDAY') && f === 'WEEKLY') ||
     (has('BYYEARDAY') && ['DAILY', 'WEEKLY', 'MONTHLY'].includes(f)) ||
     (has('BYWEEKNO') && f !== 'YEARLY') ||
@@ -105,9 +107,12 @@ const KNOWN_CHANGED_BY_SKIP = new Set<string>([
 /** The list is of the committed corpus: other fixtures ($FIXTURES, e.g. fuzzing) only need the warning. */
 const EXACT_SKIP_LIST = !process.env.FIXTURES
 
+/** Strict reading; the corpus has no time zones, so a UTC UNTIL is of a UTC event. */
+const IN = { strict: true, timeZone: 'Etc/UTC' }
+
 const tryJs = (rrule: string) => {
   try {
-    return rruleToJsCalendar(rrule, { strict: true })
+    return rruleToJsCalendar(rrule, IN)
   } catch {
     return null
   }
@@ -152,11 +157,11 @@ describe('conformance fixtures', () => {
         // with UNTIL is not a valid RecurrenceRule.
         const start = parse(c.dtstart)
         if (/INTERVAL=0(;|$)/.test(c.rrule) || (/COUNT=/.test(c.rrule) && /UNTIL=/.test(c.rrule))) {
-          expect(() => rruleToJsCalendar(c.rrule, { strict: true })).toThrow()
+          expect(() => rruleToJsCalendar(c.rrule, IN)).toThrow()
         } else {
           check(
             'rrule->jscal->rrule',
-            evaluate(c, () => jsCalendarToRRule(rruleToJsCalendar(c.rrule, { strict: true }), { strict: !invalid, onWarning: warned }))
+            evaluate(c, () => jsCalendarToRRule(rruleToJsCalendar(c.rrule, IN), { strict: !invalid, onWarning: warned }))
           )
           // Strict export throws exactly on the rules RFC 5545 does not allow.
           const js = tryJs(c.rrule)
@@ -174,7 +179,7 @@ describe('conformance fixtures', () => {
           // keepRRuleMeaning, evaluated as JSCalendar (keepJsCalendarMeaning):
           // the same dates, or a warning that they may differ.
           const warnings: string[] = []
-          const kept = rruleToJsCalendar(c.rrule, { keepRRuleMeaning: true, strict: true, onWarning: (m) => warnings.push(m) })
+          const kept = rruleToJsCalendar(c.rrule, { ...IN, keepRRuleMeaning: true, onWarning: (m) => warnings.push(m) })
           const keptDates = evaluate(c, () => jsCalendarToRRule(kept, { start, keepJsCalendarMeaning: true, ...out }))
           if (warnings.length) {
             // A warning allows other dates only for the known rules, and
@@ -191,9 +196,9 @@ describe('conformance fixtures', () => {
           // gives the same rule and RRULE, and so does a whole series
           // (recurrenceToICal -> recurrenceFromICal -> recurrenceToICal, with
           // the start), so a sync loop never changes an event.
-          const js1 = rruleToJsCalendar(c.rrule, { strict: true })
+          const js1 = rruleToJsCalendar(c.rrule, IN)
           const s1 = jsCalendarToRRule(js1, out)
-          const js2 = rruleToJsCalendar(s1, { strict: true })
+          const js2 = rruleToJsCalendar(s1, IN)
           const s2 = jsCalendarToRRule(js2, out)
           if (s1 !== s2 || normalJs(js1) !== normalJs(js2)) {
             failures.push(`${c.id} (rrule round trip) ${c.rrule}\n  ${s1} ${normalJs(js1)}\n  ${s2} ${normalJs(js2)}`)
@@ -201,7 +206,7 @@ describe('conformance fixtures', () => {
           const series = (r: Parameters<typeof recurrenceToICal>[0]) =>
             recurrenceToICal(r, { start, keepJsCalendarMeaning: true, isOccurrence: () => true, ...out }).properties
           const p1 = series({ recurrenceRules: [kept] })
-          const p2 = series(recurrenceFromICal(p1, { strict: true }))
+          const p2 = series(recurrenceFromICal(p1, IN))
           if (JSON.stringify(p1) !== JSON.stringify(p2)) {
             failures.push(`${c.id} (series round trip) ${c.rrule}\n  ${JSON.stringify(p1)}\n  ${JSON.stringify(p2)}`)
           }
@@ -211,7 +216,7 @@ describe('conformance fixtures', () => {
         const strictJs = tryJs(c.rrule)
         let lenientJs: unknown
         try {
-          lenientJs = rruleToJsCalendar(c.rrule)
+          lenientJs = rruleToJsCalendar(c.rrule, { timeZone: IN.timeZone })
         } catch (e) {
           lenientJs = { threw: String(e) }
         }
@@ -227,7 +232,7 @@ describe('conformance fixtures', () => {
             evaluate(c, () => jsCalendarToRRule(c.jscal, { start, keepJsCalendarMeaning: true, ...out })),
             expectedJs
           )
-          const back = normalJs(rruleToJsCalendar(jsCalendarToRRule(c.jscal, out), { strict: true }))
+          const back = normalJs(rruleToJsCalendar(jsCalendarToRRule(c.jscal, out), IN))
           if (jsCalendarToRRule(c.jscal) !== jsCalendarToRRule(c.jscal, out)) {
             failures.push(`${c.id} (jscal->rrule lenient) ${JSON.stringify(c.jscal)}`)
           }

@@ -8,6 +8,8 @@ import 'dart:io';
 import 'package:morgen_rrule/morgen_rrule.dart';
 import 'package:test/test.dart';
 
+import 'zones.dart';
+
 /// JSON with object keys sorted, for comparing results.
 String _canonical(Object? v) => jsonEncode(_sorted(v));
 
@@ -19,22 +21,6 @@ Object? _sorted(Object? v) => switch (v) {
       _ => v,
     };
 
-/// The offset of [zone] at the wall clock [wall]: a fixed one, or the last
-/// change at or before it.
-Duration _offset(Map<String, dynamic> offsets, String zone, DateTime wall) {
-  final z =
-      offsets[zone] ?? (zone == 'Etc/UTC' ? '+00:00' : throw StateError('No offset for $zone'));
-  final o = z is String
-      ? z
-      : (z as List)
-          .reversed
-          .cast<List>()
-          .firstWhere((c) => (c[0] as String).compareTo(_fmt(wall)) <= 0)[1] as String;
-  final sign = o.startsWith('-') ? -1 : 1;
-  return Duration(hours: int.parse(o.substring(1, 3)), minutes: int.parse(o.substring(4, 6))) *
-      sign;
-}
-
 DateTime _local(String s) => DateTime.parse('${s}Z');
 
 String _fmt(DateTime d) => d.toIso8601String().substring(0, 19);
@@ -43,17 +29,9 @@ Object? _run(Map<String, dynamic> c, List<String> warnings) {
   final o = (c['options'] as Map<String, dynamic>?) ?? const {};
   final strict = o['strict'] == true;
   void warn(String m) => warnings.add(m);
-  final offsets = (o['offsets'] as Map<String, dynamic>?) ?? const {};
-  final zone = o['eventTimeZone'] as String?;
-  DateTime toInstant(DateTime wall, String tz) => wall.subtract(_offset(offsets, tz, wall));
-  DateTime toEventTime(DateTime wall, String tz) {
-    final instant = toInstant(wall, tz);
-    // The event wall clock of the instant: try the offset at the instant's own wall clock.
-    final guess = instant.add(_offset(offsets, zone!, instant));
-    return instant.add(_offset(offsets, zone, guess));
-  }
-
-  DateTime toUtc(DateTime wall) => toInstant(wall, zone!);
+  final timeZone = o['eventTimeZone'] as String?;
+  final offsets = o['offsets'] as Map<String, dynamic>?;
+  final zones = offsets == null ? null : zonesOf(offsets);
   final start = o['start'] == null ? null : _local(o['start'] as String);
   final occurrences = (o['occurrences'] as List?)?.cast<String>().toSet();
   final isOccurrence = occurrences == null ? null : (DateTime id) => occurrences.contains(_fmt(id));
@@ -63,25 +41,23 @@ Object? _run(Map<String, dynamic> c, List<String> warnings) {
   switch (c['fn']) {
     case 'rruleToJsCalendar':
       return rruleToJsCalendar(input as String,
-          toEventTime: zone == null ? null : toEventTime,
+          timeZone: timeZone,
+          zones: zones,
           keepRRuleMeaning: o['keepRRuleMeaning'] == true,
           strict: strict,
           onWarning: warn);
     case 'jsCalendarToRRule':
       return jsCalendarToRRule((input as Map).cast<String, Object?>(),
           untilForm: form(o['untilForm'] as String?),
-          toUtc: zone == null ? null : toUtc,
-          toEventTime: zone == null ? null : toEventTime,
+          timeZone: timeZone,
+          zones: zones,
           start: start,
           keepJsCalendarMeaning: o['keepJsCalendarMeaning'] == true,
           strict: strict,
           onWarning: warn);
     case 'recurrenceOverridesFromICal':
       return recurrenceOverridesFromICal((input as List).cast<String>(),
-          toEventTime: zone == null ? null : toEventTime,
-          toInstant: o['toInstant'] == true ? toInstant : null,
-          strict: strict,
-          onWarning: warn);
+          timeZone: timeZone, zones: zones, strict: strict, onWarning: warn);
     case 'recurrenceOverridesToICal':
       final r = recurrenceOverridesToICal((input as Map).cast<String, Object?>(),
           form: form(o['form'] as String?),
@@ -92,8 +68,8 @@ Object? _run(Map<String, dynamic> c, List<String> warnings) {
       return {'properties': r.properties, 'overrides': r.overrides};
     case 'recurrenceFromICal':
       final r = recurrenceFromICal((input as List).cast<String>(),
-          toEventTime: zone == null ? null : toEventTime,
-          toInstant: o['toInstant'] == true ? toInstant : null,
+          timeZone: timeZone,
+          zones: zones,
           keepRRuleMeaning: o['keepRRuleMeaning'] == true,
           strict: strict,
           onWarning: warn);
@@ -110,9 +86,8 @@ Object? _run(Map<String, dynamic> c, List<String> warnings) {
               (i['excludedRecurrenceRules'] as List?)?.cast<Map<String, Object?>>(),
           recurrenceOverrides: (i['recurrenceOverrides'] as Map?)?.cast<String, Object?>(),
           form: form(o['form'] as String?),
-          timeZone: o['timeZone'] as String?,
-          toUtc: zone == null ? null : toUtc,
-          toEventTime: zone == null ? null : toEventTime,
+          timeZone: o['timeZone'] as String? ?? timeZone,
+          zones: zones,
           start: start,
           keepJsCalendarMeaning: o['keepJsCalendarMeaning'] == true,
           isOccurrence: isOccurrence,
@@ -144,7 +119,7 @@ void main() {
     });
   }
 
-  test('ICalDateForm.zoned needs toUtc for an UNTIL, and a time zone for overrides', () {
+  test('ICalDateForm.zoned needs the time zone for an UNTIL, and a time zone for overrides', () {
     expect(
         () => jsCalendarToRRule({'frequency': 'daily', 'until': '2024-01-31T09:00:00'},
             untilForm: ICalDateForm.zoned),

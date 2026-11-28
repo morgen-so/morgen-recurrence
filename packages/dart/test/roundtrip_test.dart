@@ -1,5 +1,5 @@
-// Generated round trips of recurrence overrides and RDATE periods (the
-// TypeScript package runs the same properties in
+// Generated round trips of recurrence overrides and RDATE periods, compared
+// as UTC instants (the TypeScript package runs the same properties in
 // packages/ts/test/roundtrip.test.ts). The corpus round trips of rules are in
 // conformance_test.dart.
 import 'dart:io';
@@ -8,104 +8,97 @@ import 'dart:math';
 import 'package:morgen_rrule/morgen_rrule.dart';
 import 'package:test/test.dart';
 
+import 'zones.dart';
+
 final _seed = int.parse(Platform.environment['ROUNDTRIP_SEED'] ?? '1');
 const _runs = 2000;
-const _hour = Duration(hours: 1);
 
 String _fmt(DateTime d) => d.toIso8601String().substring(0, 19);
-
-/// Zones with a time change in March 2025: the UTC instant of each change and
-/// the offsets before and after it (hours).
-final _zones = <String, ({DateTime change, int before, int after})>{
-  'Europe/Zurich': (change: DateTime.utc(2025, 3, 30, 1), before: 1, after: 2),
-  'America/New_York': (change: DateTime.utc(2025, 3, 9, 7), before: -5, after: -4),
-  'Etc/UTC': (change: DateTime.utc(1970), before: 0, after: 0),
-};
-
-/// The wall clock of an instant.
-DateTime _wall(String zone, DateTime instant) {
-  final z = _zones[zone]!;
-  return instant.add(_hour * (instant.isBefore(z.change) ? z.before : z.after));
-}
-
-/// The instant of a wall clock (a skipped time is read with the offset before the change).
-DateTime _toInstant(DateTime wall, String zone) {
-  final z = _zones[zone]!;
-  final before = wall.subtract(_hour * z.before);
-  return before.isBefore(z.change) ? before : wall.subtract(_hour * z.after);
-}
-
-ToEventTime _toEventTime(String eventZone) =>
-    (wall, zone) => _wall(eventZone, _toInstant(wall, zone));
-
-/// Parses a duration of hours, minutes and seconds (what the converter writes).
-Duration _duration(String d) {
-  final m = RegExp(r'^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$').firstMatch(d);
-  if (m == null) throw StateError('Unexpected duration $d');
-  int part(int i) => int.parse(m.group(i) ?? '0');
-  return Duration(hours: part(1), minutes: part(2), seconds: part(3));
-}
-
 String _ical(DateTime d) => _fmt(d).replaceAll(RegExp('[-:]'), '');
+String _icalUtc(DateTime instant) => '${_ical(instant)}Z';
+DateTime _wall(DateTime instant, String zone) => zones.fromInstant(instant, zone);
+DateTime _instant(DateTime wall, String zone) => zones.toInstant(wall, zone);
+
+/// A value written as `20250105T090000`.
+DateTime _parseICal(String s) => DateTime.parse('${s.substring(0, 15)}Z');
+
+/// The end of a JSCalendar duration from a start instant in the event's zone
+/// (RFC 8984 section 1.4.6): weeks and days on the wall clock, then exact time.
+DateTime _addDuration(DateTime start, String duration, String zone) {
+  final m = RegExp(r'^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$')
+      .firstMatch(duration);
+  if (m == null) throw StateError('Unexpected duration $duration');
+  int n(int i) => int.parse(m.group(i) ?? '0');
+  final wall = _wall(start, zone).add(Duration(days: n(1) * 7 + n(2)));
+  return _instant(wall, zone).add(Duration(hours: n(3), minutes: n(4), seconds: n(5)));
+}
+
+/// The instants of the EXDATE and RDATE values written for an event in [zone].
+({List<DateTime> exdates, List<DateTime> rdates}) _written(List<String> properties, String zone) {
+  final exdates = <DateTime>[], rdates = <DateTime>[];
+  for (final line in properties) {
+    final values = line
+        .substring(line.indexOf(':') + 1)
+        .split(',')
+        .map((v) => _instant(_parseICal(v.split('/').first), zone));
+    (line.startsWith('EXDATE') ? exdates : rdates).addAll(values);
+  }
+  return (exdates: exdates, rdates: rdates);
+}
 
 void main() {
-  group('RDATE periods keep their end instant', () {
+  group('RDATE periods keep their start and end instants', () {
     final random = Random(_seed);
-    final zones = _zones.keys.toList();
     for (var i = 0; i < _runs; i++) {
-      // Starts from Mar 7 to Apr 1, 2025, ends up to three days later, on whole minutes.
-      final start = DateTime.utc(2025, 3, 7).add(Duration(minutes: random.nextInt(25 * 24 * 60)));
-      final end = start.add(Duration(minutes: random.nextInt(3 * 24 * 60)));
-      final source = zones[random.nextInt(zones.length)];
-      final eventZone = zones[random.nextInt(2)];
-      final sw = _wall(source, start), ew = _wall(source, end);
-      // A wall clock in a skipped hour does not name the instant: leave it out.
-      if (_toInstant(sw, source) != start || _toInstant(ew, source) != end) continue;
-      // Half the periods end with a duration of days (added to the wall
+      // Starts around the time changes of March and of October/November
+      // 2025, on whole minutes; ends up to three days later.
+      final from = random.nextBool() ? DateTime.utc(2025, 3, 7) : DateTime.utc(2025, 10, 20);
+      final start = from.add(Duration(minutes: random.nextInt(25 * 24 * 60)));
+      final source = zoneNames[random.nextInt(zoneNames.length)];
+      final eventZone = zoneNames[random.nextInt(zoneNames.length)];
+      final utc = source == 'Etc/UTC';
+      // The end: an explicit one, or a duration of days (added on the wall
       // clock of the source zone, RFC 5545 section 3.3.6) and exact time.
       final days = random.nextInt(3);
       final exact = random.nextInt(24 * 60) * 60;
       final useDuration = random.nextBool();
-      final dayEnd = sw.add(Duration(days: days));
-      if (useDuration && _wall(source, _toInstant(dayEnd, source)) != dayEnd) continue;
-      final expectedEnd =
-          useDuration ? _toInstant(dayEnd, source).add(Duration(seconds: exact)) : end;
-      final utc = source == 'Etc/UTC';
-      final value = utc ? '${_ical(start)}Z' : _ical(sw);
+      final explicitEnd = start.add(Duration(minutes: random.nextInt(3 * 24 * 60)));
+      final sw = _wall(start, source);
+      final end = useDuration
+          ? _instant(sw.add(Duration(days: days)), source).add(Duration(seconds: exact))
+          : explicitEnd;
+      final ew = _wall(end, source);
+      // A wall clock that does not name its instant cannot be written: leave it out.
+      if (_instant(sw, source) != start || (!useDuration && _instant(ew, source) != end)) continue;
+      final value = utc ? _icalUtc(start) : _ical(sw);
       final endValue = useDuration
           ? 'P${days > 0 ? '${days}D' : ''}T${exact ~/ 3600}H${exact % 3600 ~/ 60}M'
           : utc
-              ? '${_ical(end)}Z'
+              ? _icalUtc(end)
               : _ical(ew);
-      final line = utc
-          ? 'RDATE;VALUE=PERIOD:$value/$endValue'
-          : 'RDATE;TZID=$source;VALUE=PERIOD:$value/$endValue';
+      final line = 'RDATE${utc ? '' : ';TZID=$source'};VALUE=PERIOD:$value/$endValue';
       test('$i: $line in $eventZone', () {
-        final got = recurrenceOverridesFromICal([line],
-            toEventTime: _toEventTime(eventZone), toInstant: _toInstant, strict: true);
-        final MapEntry(:key, :value) = got.entries.single;
-        final s = _toInstant(DateTime.parse('${key}Z'), eventZone);
+        Map<String, Map<String, Object?>> read() =>
+            recurrenceOverridesFromICal([line], timeZone: eventZone, zones: zones, strict: true);
+        if (!representable(start, eventZone)) {
+          // The second of two equal local times has no recurrence id.
+          expect(read, throwsFormatException);
+          return;
+        }
+        final MapEntry(:key, value: patch) = read().entries.single;
+        final s = _instant(DateTime.parse('${key}Z'), eventZone);
         expect(_fmt(s), _fmt(start));
-        expect(_fmt(s.add(_duration(value['duration'] as String))), _fmt(expectedEnd));
+        expect(_fmt(_addDuration(s, patch['duration'] as String, eventZone)), _fmt(end));
       });
     }
   });
 
-  group('EXDATE and RDATE in the repeated hour', () {
-    // Zurich on Oct 26, 2025: +02:00 until 01:00Z, then +01:00, so 00:00Z to
-    // 00:59Z and 01:00Z to 01:59Z have the same local times, 02:00 to 02:59.
-    final change = DateTime.utc(2025, 10, 26, 1);
-    String local(DateTime i) => _fmt(i.add(_hour * (i.isBefore(change) ? 2 : 1)));
-    DateTime zurich(DateTime w, String zone) {
-      if (zone == 'Etc/UTC') return w;
-      final before = w.subtract(_hour * 2);
-      return before.isBefore(change) ? before : w.subtract(_hour);
-    }
-
-    DateTime toEventTime(DateTime w, String zone) => DateTime.parse('${local(zurich(w, zone))}Z');
+  group('EXDATE and RDATE sets keep their instants through a round trip', () {
     final random = Random(_seed + 2);
-    for (var i = 0; i < _runs ~/ 4; i++) {
-      // Values every 30 minutes from 23:00Z to 03:00Z.
+    for (var i = 0; i < _runs ~/ 2; i++) {
+      // Values every 30 minutes from 23:00Z to 03:00Z around the hour Zurich
+      // repeats (Oct 26, 2025: 00:00Z-00:59Z and 01:00Z-01:59Z are both
+      // 02:00-02:59), for an event in Zurich, New York or UTC.
       List<DateTime> pick() {
         final n = random.nextInt(5);
         return {
@@ -116,34 +109,42 @@ void main() {
       }
 
       final rdates = pick(), exdates = pick();
+      final zone = zoneNames[random.nextInt(zoneNames.length)];
       if (rdates.isEmpty && exdates.isEmpty) continue;
-      String values(List<DateTime> d) => d.map((v) => '${_ical(v)}Z').join(',');
       final lines = [
-        if (rdates.isNotEmpty) 'RDATE:${values(rdates)}',
-        if (exdates.isNotEmpty) 'EXDATE:${values(exdates)}',
+        if (rdates.isNotEmpty) 'RDATE:${rdates.map(_icalUtc).join(',')}',
+        if (exdates.isNotEmpty) 'EXDATE:${exdates.map(_icalUtc).join(',')}',
       ];
-      test('$i: ${lines.join(' ')}', () {
-        // An EXDATE removes the RDATE of its instant; what is left is kept.
-        final kept = [
-          for (final r in rdates)
-            if (!exdates.contains(r)) r
-        ];
-        final expected = <String, Object?>{
-          for (final e in exdates) local(e): {'excluded': true},
-          for (final r in kept) local(r): <String, Object?>{},
-        };
-        final collisions = kept.map(local).toSet().length != kept.length;
+      test('$i: ${lines.join(' ')} in $zone', () {
+        // RFC 5545: the added instants are the RDATEs without the EXDATEs.
+        final added = rdates.where((r) => !exdates.contains(r)).toList();
+        // What a recurrence id cannot name: an added instant, or an excluded
+        // one that is not just the removal of an RDATE.
+        final lost = [...added, ...exdates.where((e) => !rdates.contains(e))]
+            .where((x) => !representable(x, zone));
         final warnings = <String>[];
-        final got = recurrenceOverridesFromICal(lines,
-            toEventTime: toEventTime, toInstant: zurich, onWarning: warnings.add);
-        expect(got, expected);
-        expect(warnings.isNotEmpty, collisions);
-        if (collisions) {
-          expect(
-              () => recurrenceOverridesFromICal(lines,
-                  toEventTime: toEventTime, toInstant: zurich, strict: true),
-              throwsFormatException);
+        final overrides = recurrenceOverridesFromICal(lines,
+            timeZone: zone, zones: zones, onWarning: warnings.add);
+        expect(warnings.isNotEmpty, lost.isNotEmpty);
+        Map<String, Map<String, Object?>> strict(List<String> l) =>
+            recurrenceOverridesFromICal(l, timeZone: zone, zones: zones, strict: true);
+        if (lost.isNotEmpty) {
+          expect(() => strict(lines), throwsFormatException);
+        } else {
+          expect(strict(lines), overrides);
         }
+
+        // Written back for the event, the lines name these instants:
+        final back = recurrenceOverridesToICal(overrides,
+            form: ICalDateForm.zoned, timeZone: zone, isOccurrence: (_) => false);
+        final got = _written(back.properties, zone);
+        // every added instant that has a recurrence id, and no other (an
+        // excluded occurrence never comes back);
+        expect(got.rdates.map(_fmt), added.where((r) => representable(r, zone)).map(_fmt));
+        // every excluded instant that has one, and no other.
+        expect(got.exdates.map(_fmt), exdates.where((e) => representable(e, zone)).map(_fmt));
+        // And reading those lines gives the same overrides again.
+        expect(strict(back.properties), overrides);
       });
     }
   });
@@ -153,6 +154,11 @@ void main() {
     const forms = ICalDateForm.values;
     for (var i = 0; i < _runs ~/ 4; i++) {
       final form = forms[i % forms.length];
+      final timeZone = switch (form) {
+        ICalDateForm.zoned => 'Europe/Zurich',
+        ICalDateForm.utc => 'Etc/UTC',
+        _ => null,
+      };
       final overrides = <String, Map<String, Object?>>{};
       final occurrences = <String>{};
       final n = 1 + random.nextInt(6);
@@ -172,11 +178,12 @@ void main() {
       test('$i: ${form.name} $overrides', () {
         ICalRecurrenceDates write(Map<String, Object?> o) => recurrenceOverridesToICal(o,
             form: form,
-            timeZone: form == ICalDateForm.zoned ? 'Europe/Zurich' : null,
+            timeZone: timeZone,
             isOccurrence: (id) => occurrences.contains(_fmt(id)),
             strict: true);
         final first = write(overrides);
-        final back = recurrenceOverridesFromICal(first.properties, strict: true);
+        final back = recurrenceOverridesFromICal(first.properties,
+            timeZone: timeZone, zones: zones, strict: true);
         for (final MapEntry(:key, value: patch) in overrides.entries) {
           final got = back[key];
           final generated = occurrences.contains(key);
@@ -199,5 +206,16 @@ void main() {
         expect(write(back).properties, first.properties);
       });
     }
+  });
+
+  test('reads 50,000 RDATEs and EXDATEs in linear time', () {
+    String values(DateTime from) =>
+        [for (var k = 0; k < 25000; k++) _icalUtc(from.add(Duration(hours: 2 * k)))].join(',');
+    final lines = ['RDATE:${values(DateTime.utc(2000))}', 'EXDATE:${values(DateTime.utc(2003))}'];
+    final watch = Stopwatch()..start();
+    final got = recurrenceOverridesFromICal(lines, timeZone: 'Europe/Zurich', zones: zones);
+    // A quadratic scan takes minutes here; a linear one well under a second.
+    expect(watch.elapsed, lessThan(const Duration(seconds: 5)));
+    expect(got.length, greaterThan(25000));
   });
 }

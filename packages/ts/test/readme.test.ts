@@ -20,6 +20,9 @@ it('the writer recipe takes an event with overrides and no rules', () => {
   const r = recurrenceLines(undefined, { '2024-01-05T09:00:00': {} }, false, undefined)
   expect(r).toEqual({ properties: ['RDATE:20240105T090000'], overrides: [] })
   expect(recurrenceLines(null, null, false, undefined)).toEqual({ properties: [], overrides: [] })
+  // A backend or integration-service rule has no `interval`.
+  const weekly = { frequency: 'weekly' as const, byDay: [{ day: 'mo' }] }
+  expect(recurrenceLines([weekly], null, true, null).properties).toEqual(['RRULE:FREQ=WEEKLY;BYDAY=MO'])
 })
 
 it('a rule the integration service rejects is not written', () => {

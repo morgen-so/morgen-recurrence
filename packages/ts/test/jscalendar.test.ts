@@ -12,6 +12,7 @@ import {
   recurrenceOverridesFromICal,
   recurrenceOverridesToICal,
   recurrenceToICal,
+  TimeZones,
   rruleToJsCalendar,
 } from '../src/index'
 
@@ -31,39 +32,45 @@ const canonical = (v: unknown): string =>
       : x
   )
 
-type Offsets = Record<string, string | [string, string][]>
 const fmt = (d: Date) => d.toISOString().slice(0, 19)
 
-/** The offset of `zone` at the wall clock `wall`: a fixed one, or the last change at or before it. */
-const offsetMs = (offsets: Offsets, zone: string, wall: Date) => {
-  const z = offsets[zone] ?? (zone === 'Etc/UTC' ? '+00:00' : undefined)
-  if (!z) throw new Error(`No offset for ${zone}`)
-  const o = typeof z === 'string' ? z : [...z].reverse().find(([from]) => from <= fmt(wall))![1]
-  const sign = o.startsWith('-') ? -1 : 1
-  return sign * (Number(o.slice(1, 3)) * 60 + Number(o.slice(4, 6))) * 60_000
+/**
+ * `offsets` of a case: per zone a fixed offset (`+02:00`), or the offset
+ * before the first change and then [UTC instant of a change, offset from then].
+ */
+type Offsets = Record<string, string | [string, ...[string, string][]]>
+const ms = (o: string) => (o.startsWith('-') ? -1 : 1) * (Number(o.slice(1, 3)) * 60 + Number(o.slice(4, 6))) * 60_000
+function zonesOf(offsets: Offsets): TimeZones {
+  const changes = (zone: string): [number, number][] => {
+    const z = offsets[zone]
+    if (!z) throw new Error(`No offset for ${zone}`)
+    if (typeof z === 'string') return [[-Infinity, ms(z)]]
+    const [base, ...rest] = z
+    return [[-Infinity, ms(base)], ...rest.map(([at, o]): [number, number] => [Date.parse(at), ms(o)])]
+  }
+  const offsetAt = (zone: string, instant: number) => changes(zone).filter(([from]) => instant >= from).pop()![1]
+  return {
+    fromInstant: (instant, zone) => new Date(instant.getTime() + offsetAt(zone, instant.getTime())),
+    // RFC 5545 section 3.3.5: the first of two instants; in a gap, the offset before it.
+    toInstant: (wall, zone) => {
+      const w = wall.getTime()
+      const valid = changes(zone).map(([, o]) => w - o).filter((i) => i + offsetAt(zone, i) === w)
+      return new Date(valid.length ? Math.min(...valid) : w - offsetAt(zone, w - 86_400_000))
+    },
+  }
 }
 function run(c: ConversionCase, warnings: string[]): unknown {
   const o = c.options ?? {}
   const strict = o.strict === true
   const onWarning = (m: string) => warnings.push(m)
-  const offsets = (o.offsets as Offsets) ?? {}
-  const zone = o.eventTimeZone as string | undefined
-  const toInstantFn = (wall: Date, tz: string) => new Date(wall.getTime() - offsetMs(offsets, tz, wall))
-  const toEventTime = zone
-    ? (wall: Date, tz: string) => {
-        const instant = toInstantFn(wall, tz)
-        // The event wall clock of the instant: try the offset at the instant's own wall clock.
-        const guess = new Date(instant.getTime() + offsetMs(offsets, zone, instant))
-        return new Date(instant.getTime() + offsetMs(offsets, zone, guess))
-      }
-    : undefined
-  const toUtc = zone ? (wall: Date) => toInstantFn(wall, zone) : undefined
-  const toInstant = o.toInstant === true ? toInstantFn : undefined
+  const timeZone = o.eventTimeZone as string | undefined
+  const zones = o.offsets ? zonesOf(o.offsets as Offsets) : undefined
   const start = o.start ? new Date(`${o.start}Z`) : undefined
   switch (c.fn) {
     case 'rruleToJsCalendar':
       return rruleToJsCalendar(c.input as string, {
-        toEventTime,
+        timeZone,
+        zones,
         keepRRuleMeaning: o.keepRRuleMeaning === true,
         strict,
         onWarning,
@@ -71,15 +78,15 @@ function run(c: ConversionCase, warnings: string[]): unknown {
     case 'jsCalendarToRRule':
       return jsCalendarToRRule(c.input as JSCalendarRecurrenceRule, {
         untilForm: o.untilForm as ICalDateForm,
-        toUtc,
-        toEventTime,
+        timeZone,
+        zones,
         start,
         keepJsCalendarMeaning: o.keepJsCalendarMeaning === true,
         strict,
         onWarning,
       })
     case 'recurrenceOverridesFromICal':
-      return recurrenceOverridesFromICal(c.input as string[], { toEventTime, toInstant, strict, onWarning })
+      return recurrenceOverridesFromICal(c.input as string[], { timeZone, zones, strict, onWarning })
     case 'recurrenceOverridesToICal': {
       const occurrences = o.occurrences ? new Set(o.occurrences as string[]) : undefined
       return recurrenceOverridesToICal(c.input as Record<string, unknown>, {
@@ -92,8 +99,8 @@ function run(c: ConversionCase, warnings: string[]): unknown {
     }
     case 'recurrenceFromICal':
       return recurrenceFromICal(c.input as string[], {
-        toEventTime,
-        toInstant,
+        timeZone,
+        zones,
         keepRRuleMeaning: o.keepRRuleMeaning === true,
         strict,
         onWarning,
@@ -101,9 +108,8 @@ function run(c: ConversionCase, warnings: string[]): unknown {
     case 'recurrenceToICal':
       return recurrenceToICal(c.input as Parameters<typeof recurrenceToICal>[0], {
         form: o.form as ICalDateForm,
-        timeZone: o.timeZone as string,
-        toUtc,
-        toEventTime,
+        timeZone: (o.timeZone as string) ?? timeZone,
+        zones,
         start,
         keepJsCalendarMeaning: o.keepJsCalendarMeaning === true,
         isOccurrence: o.occurrences ? (id) => (o.occurrences as string[]).includes(fmt(id)) : undefined,

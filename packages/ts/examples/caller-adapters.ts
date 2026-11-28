@@ -16,6 +16,7 @@ import {
   recurrenceFromICal,
   RecurrenceFromICalOptions,
   recurrenceToICal,
+  TimeZones,
 } from '../src/index'
 
 // --- Stand-ins for the projects' types and dependencies. -------------------
@@ -64,7 +65,8 @@ interface IntegrationRecurrenceRule extends Omit<MorgenRecurrenceRule, 'interval
   rscale?: CldrCalendar
 }
 declare const moment: {
-  tz(value: string, zone: string): { tz(zone: string): { format(f: string): string }; utc(): { format(f: string): string } }
+  tz(value: string, zone: string): { utc(): { format(f: string): string } }
+  utc(value: string): { tz(zone: string): { format(f: string): string } }
 }
 declare const TimezoneService: { Timezone: new (tz: string) => { ianaName: string } }
 /** The project's warning sink (here: collected, for the test). */
@@ -86,11 +88,11 @@ function toMorgenRule(rule: JSCalendarRecurrenceRule | null): MorgenRecurrenceRu
 const DAYS: readonly string[] = ['mo', 'tu', 'we', 'th', 'fr', 'sa', 'su']
 const isDay = (d: string): d is JSCalendarDay => DAYS.includes(d)
 
+/** A stored rule: desktop's and Kai's, or the backend's and the integration service's (`interval` optional). */
+type StoredRule = Omit<MorgenRecurrenceRule, 'interval'> & { interval?: number }
+
 /** A stored Morgen rule as the library's rule: weekdays checked, unknown ones left out. */
-function fromMorgenRule(
-  rule: MorgenRecurrenceRule | Omit<MorgenRecurrenceRule, 'interval'>,
-  warn?: OnWarning
-): JSCalendarRecurrenceRule {
+function fromMorgenRule(rule: StoredRule, warn?: OnWarning): JSCalendarRecurrenceRule {
   const byDay = rule.byDay?.flatMap((d): JSCalendarNDay[] => {
     const day = d.day.toLowerCase()
     if (isDay(day)) return [{ ...d, day }]
@@ -154,18 +156,16 @@ const iana = (tz: string) => new TimezoneService.Timezone(tz === 'Etc/UTC' ? 'UT
 const UTC_ZONES = ['UTC', 'Etc/UTC', 'Etc/UCT', 'UCT', 'Etc/Universal', 'Universal', 'Etc/Zulu', 'Zulu',
   'GMT', 'Etc/GMT', 'Etc/GMT0', 'GMT0', 'Etc/GMT+0', 'Etc/GMT-0', 'Etc/Greenwich', 'Greenwich']
 const isUtc = (tz: string) => UTC_ZONES.includes(iana(tz))
-const toEventTime = (eventTz: string) => (wall: Date, tz: string) =>
-  floating(moment.tz(fmt(wall), iana(tz)).tz(iana(eventTz)).format('YYYY-MM-DDTHH:mm:ss'))
-const toUtc = (eventTz: string) => (wall: Date) =>
-  floating(moment.tz(fmt(wall), iana(eventTz)).utc().format('YYYY-MM-DDTHH:mm:ss'))
-const toInstant = (wall: Date, tz: string) =>
-  floating(moment.tz(fmt(wall), iana(tz)).utc().format('YYYY-MM-DDTHH:mm:ss'))
+const zones: TimeZones = {
+  toInstant: (wall, tz) => floating(moment.tz(fmt(wall), iana(tz)).utc().format('YYYY-MM-DDTHH:mm:ss')),
+  fromInstant: (instant, tz) => floating(moment.utc(fmt(instant)).tz(iana(tz)).format('YYYY-MM-DDTHH:mm:ss')),
+}
 const form = (allDay: boolean, tz?: string | null): ICalDateForm =>
   allDay ? 'date' : !tz ? 'local' : isUtc(tz) ? 'utc' : 'zoned'
 
 /** The iCalendar lines of an event's recurrence: rules, overrides or both may be absent. */
 function recurrenceLines(
-  rules: MorgenRecurrenceRule[] | null | undefined,
+  rules: StoredRule[] | null | undefined,
   overrides: Record<string, unknown> | null | undefined,
   allDay: boolean,
   tz: string | null | undefined,
@@ -173,27 +173,34 @@ function recurrenceLines(
 ) {
   return recurrenceToICal(
     { recurrenceRules: (rules ?? []).map((r) => fromMorgenRule(r, onWarning)), recurrenceOverrides: overrides },
-    { form: form(allDay, tz), timeZone: tz ?? undefined, toUtc: tz ? toUtc(tz) : undefined, isOccurrence, onWarning }
+    { form: form(allDay, tz), timeZone: tz, zones, isOccurrence, onWarning }
   )
 }
 
-// The reverse direction compiles for both rule types.
-const rrules = (stored: MorgenRecurrenceRule, storedIntegration: IntegrationRecurrenceRule) => [
+// The reverse direction compiles for each project's rule type: desktop and
+// Kai (`interval` required), the backend (optional) and the integration service.
+const reverse = (
+  stored: MorgenRecurrenceRule,
+  storedBackend: Omit<MorgenRecurrenceRule, 'interval'> & { interval?: number },
+  storedIntegration: IntegrationRecurrenceRule
+) => [
   jsCalendarToRRule(fromMorgenRule(stored, onWarning)),
+  jsCalendarToRRule(fromMorgenRule(storedBackend, onWarning)),
   jsCalendarToRRule(storedIntegration),
+  recurrenceLines([stored], null, false, 'Europe/Zurich'),
+  recurrenceLines([storedBackend], null, false, 'Europe/Zurich'),
+  recurrenceLines([storedIntegration], null, false, 'Europe/Zurich'),
 ]
 
 export {
-  rrules,
+  reverse,
   fromMorgenRule,
   toIntegrationRule,
   ruleForWrite,
   toMorgenRule,
   recurrenceRulesOrNull,
   recurrenceLines,
-  toEventTime,
-  toUtc,
-  toInstant,
+  zones,
   form,
   warnings,
 }

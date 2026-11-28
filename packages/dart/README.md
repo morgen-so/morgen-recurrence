@@ -19,7 +19,7 @@ RRuleOptions.fromJsCalendar(jsCalendarRule, dtstart);   // JSCalendar (RFC 8984)
 rruleToJsCalendar('FREQ=WEEKLY;BYDAY=MO');               // RRULE -> RecurrenceRule
 jsCalendarToRRule({'frequency': 'weekly'});              // RecurrenceRule -> RRULE
 recurrenceOverridesFromICal(['EXDATE:20240102T090000']);  // EXDATE/RDATE <-> overrides
-recurrenceFromICal(googleEvent.recurrence, toEventTime: ...); // a whole recurrence
+recurrenceFromICal(googleEvent.recurrence, timeZone: tz, zones: zones); // a whole recurrence
 ```
 
 The JSCalendar conversion follows draft-ietf-calext-jscalendar-icalendar. It is

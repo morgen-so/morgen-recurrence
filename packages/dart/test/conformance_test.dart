@@ -66,13 +66,18 @@ String _normalJs(Map<String, dynamic> rule) {
 }
 
 /// Whether the RRULE has rule parts RFC 5545 section 3.3.10 does not allow
-/// with its FREQ (the rrule package reads them, as JSCalendar does): strict
+/// with its FREQ, or BYSETPOS alone (the rrule package reads them, as
+/// JSCalendar does): strict
 /// jsCalendarToRRule throws on such a rule, lenient warns.
 bool _notInRfc5545(String rrule) {
   final f = RegExp(r'FREQ=(\w+)').firstMatch(rrule)?.group(1) ?? '';
   bool has(String part) => RegExp('(^|;)$part=').hasMatch(rrule);
   final nth = RegExp(r'(^|;)BYDAY=[^;]*\d').hasMatch(rrule);
-  return has('BYMONTHDAY') && f == 'WEEKLY' ||
+  const others = [
+    'BYMONTH', 'BYWEEKNO', 'BYYEARDAY', 'BYMONTHDAY', 'BYDAY', 'BYHOUR', 'BYMINUTE', 'BYSECOND' //
+  ];
+  return has('BYSETPOS') && !others.any(has) ||
+      has('BYMONTHDAY') && f == 'WEEKLY' ||
       has('BYYEARDAY') && const ['DAILY', 'WEEKLY', 'MONTHLY'].contains(f) ||
       has('BYWEEKNO') && f != 'YEARLY' ||
       nth && !const ['MONTHLY', 'YEARLY'].contains(f) ||
@@ -94,9 +99,12 @@ const _knownChangedBySkip = {
 /// fuzzing) only need the warning.
 final _exactSkipList = Platform.environment['FIXTURES'] == null;
 
+/// The corpus has no time zones, so a UTC UNTIL is of a UTC event.
+const _utc = 'Etc/UTC';
+
 Map<String, dynamic>? _tryJs(String rrule) {
   try {
-    return rruleToJsCalendar(rrule, strict: true);
+    return rruleToJsCalendar(rrule, timeZone: _utc, strict: true);
   } on FormatException {
     return null;
   }
@@ -170,13 +178,14 @@ void main() {
         // COUNT with UNTIL is not a valid RecurrenceRule.
         if (RegExp(r'INTERVAL=0(;|$)').hasMatch(rrule) ||
             rrule.contains('COUNT=') && rrule.contains('UNTIL=')) {
-          expect(() => rruleToJsCalendar(rrule, strict: true), throwsFormatException,
+          expect(
+              () => rruleToJsCalendar(rrule, timeZone: _utc, strict: true), throwsFormatException,
               reason: rrule);
         } else {
           conversion(
               'rrule->jscal->rrule',
               () => RRuleOptions.parse(
-                  jsCalendarToRRule(rruleToJsCalendar(rrule, strict: true)!,
+                  jsCalendarToRRule(rruleToJsCalendar(rrule, timeZone: _utc, strict: true)!,
                       strict: strictOut, onWarning: exportWarnings.add)!,
                   dtstart: dtstart));
           // Strict export throws exactly on the rules RFC 5545 does not allow.
@@ -195,7 +204,7 @@ void main() {
           // warning that they may differ.
           final warnings = <String>[];
           final kept = rruleToJsCalendar(rrule,
-              keepRRuleMeaning: true, strict: true, onWarning: warnings.add)!;
+              timeZone: _utc, keepRRuleMeaning: true, strict: true, onWarning: warnings.add)!;
           if (warnings.isNotEmpty) {
             // A warning allows other dates only for the known rules, and
             // those must still differ (so the list stays exact).
@@ -216,9 +225,9 @@ void main() {
           // gives the same rule and RRULE, and so does a whole series
           // (recurrenceToICal -> recurrenceFromICal -> recurrenceToICal, with
           // the start), so a sync loop never changes an event.
-          final js1 = rruleToJsCalendar(rrule, strict: true)!;
+          final js1 = rruleToJsCalendar(rrule, timeZone: _utc, strict: true)!;
           final s1 = jsCalendarToRRule(js1, strict: strictOut, onWarning: exportWarnings.add)!;
-          final js2 = rruleToJsCalendar(s1, strict: true)!;
+          final js2 = rruleToJsCalendar(s1, timeZone: _utc, strict: true)!;
           final s2 = jsCalendarToRRule(js2, strict: strictOut, onWarning: exportWarnings.add)!;
           if (s1 != s2 || _normalJs(js1) != _normalJs(js2)) {
             failures.add('${c['id']} (rrule round trip) $rrule\n'
@@ -236,7 +245,7 @@ void main() {
                       onWarning: exportWarnings.add)
                   .properties;
           final p1 = series([kept]);
-          final back = recurrenceFromICal(p1, strict: true);
+          final back = recurrenceFromICal(p1, timeZone: _utc, strict: true);
           final p2 = series(back.recurrenceRules, back.recurrenceOverrides);
           if (jsonEncode(p1) != jsonEncode(p2)) {
             failures.add('${c['id']} (series round trip) $rrule\n'
@@ -248,7 +257,7 @@ void main() {
         final strictJs = _tryJs(rrule);
         final lenientJs = (() {
           try {
-            return rruleToJsCalendar(rrule);
+            return rruleToJsCalendar(rrule, timeZone: _utc);
           } catch (e) {
             return {'threw': '$e'};
           }
