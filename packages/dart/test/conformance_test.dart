@@ -81,7 +81,7 @@ bool _notInRfc5545(String rrule) {
 
 /// The yearly SKIP rules whose keepRRuleMeaning conversion (with its warning)
 /// gives other dates than rrule.js: a month day above 28 moved by SKIP. The
-/// other rules with that warning must keep their dates.
+/// other corpus rules with that warning must keep their dates.
 const _knownChangedBySkip = {
   'skip-overlap-0415',
   'skip-overlap-0517',
@@ -89,6 +89,10 @@ const _knownChangedBySkip = {
   'skip-overlap-0623',
   'skip-overlap-0753',
 };
+
+/// The list is of the committed corpus: other fixtures ($FIXTURES, e.g.
+/// fuzzing) only need the warning.
+final _exactSkipList = Platform.environment['FIXTURES'] == null;
 
 Map<String, dynamic>? _tryJs(String rrule) {
   try {
@@ -200,7 +204,7 @@ void main() {
                 jsonEncode(_evaluate(() => RRuleOptions.fromJsCalendar(kept, dtstart)!, q)) ==
                     expected;
             if (same) warnedButKept++;
-            if (same == _knownChangedBySkip.contains(c['id'])) {
+            if (_exactSkipList && same == _knownChangedBySkip.contains(c['id'])) {
               failures.add('${c['id']} (keepRRuleMeaning with a warning, same dates: $same) '
                   '$rrule\n  ${warnings.join('; ')}');
             }

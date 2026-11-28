@@ -92,7 +92,7 @@ function notInRfc5545(rrule: string): boolean {
 /**
  * The yearly SKIP rules whose keepRRuleMeaning conversion (with its warning)
  * gives other dates than rrule.js: a month day above 28 moved by SKIP. The
- * other rules with that warning must keep their dates.
+ * other corpus rules with that warning must keep their dates.
  */
 const KNOWN_CHANGED_BY_SKIP = new Set<string>([
   'skip-overlap-0415',
@@ -101,6 +101,9 @@ const KNOWN_CHANGED_BY_SKIP = new Set<string>([
   'skip-overlap-0623',
   'skip-overlap-0753',
 ])
+
+/** The list is of the committed corpus: other fixtures ($FIXTURES, e.g. fuzzing) only need the warning. */
+const EXACT_SKIP_LIST = !process.env.FIXTURES
 
 const tryJs = (rrule: string) => {
   try {
@@ -179,7 +182,7 @@ describe('conformance fixtures', () => {
             withoutForm++
             const same = JSON.stringify(keptDates) === JSON.stringify(c.expected)
             if (same) warnedButKept++
-            if (same === KNOWN_CHANGED_BY_SKIP.has(c.id)) {
+            if (EXACT_SKIP_LIST && same === KNOWN_CHANGED_BY_SKIP.has(c.id)) {
               failures.push(`${c.id} (keepRRuleMeaning with a warning, same dates: ${same}) ${c.rrule}\n  ${warnings.join('; ')}`)
             }
           } else check('rrule->jscal keepRRuleMeaning', keptDates)
